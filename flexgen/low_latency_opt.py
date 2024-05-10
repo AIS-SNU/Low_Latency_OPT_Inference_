@@ -35,10 +35,20 @@ class Policy:
     gpu_batch_size: int
 
     # percent = a means a%
-    w_gpu_percent: float
-    w_cpu_percent: float
+    InputEmbed_w_gpu_percent: float
+    InputEmbed_w_cpu_percent: float
+    OutputEmbed_w_gpu_percent: float
+    OutputEmbed_w_cpu_percent: float
+    SelfAttention_w_gpu_percent: float
+    SelfAttention_w_cpu_percent: float
+    MLP_w_gpu_percent: float
+    MLP_w_cpu_percent: float
+
     cache_gpu_percent: float
     cache_cpu_percent: float
+    # w_gpu_percent: float
+    # w_cpu_percent: float
+    
 
     # Whether to overlap the I/O and compute
     overlap: bool
@@ -62,10 +72,21 @@ class Policy:
     # Compress KV cache with group-wise quantization
     compress_cache: bool
     comp_cache_config: CompressionConfig
-
     @property
-    def w_disk_percent(self):
-        return 100 - self.w_gpu_percent - self.w_cpu_percent
+    def InputEmbed_w_disk_percent(self):
+        return 100 - self.InputEmbed_w_gpu_percent - self.InputEmbed_w_cpu_percent
+    @property
+    def OutputEmbed_w_disk_percent(self):
+        return 100 - self.OutputEmbed_w_gpu_percent - self.OutputEmbed_w_cpu_percent
+    @property
+    def SelfAttention_w_disk_percent(self):
+        return 100 - self.SelfAttention_w_gpu_percent - self.SelfAttention_w_cpu_percent
+    @property
+    def MLP_w_disk_percent(self):
+        return 100 - self.MLP_w_gpu_percent - self.MLP_w_cpu_percent
+    # @property
+    # def w_disk_percent(self):
+    #     return 100 - self.w_gpu_percent - self.w_cpu_percent
 
     @property
     def cache_disk_percent(self):
@@ -82,8 +103,18 @@ def get_choice(cur_percent, percents, choices):
     return choices[-1]
 
 
-def init_weight_list(weight_specs, policy, env):
-    dev_percents = [policy.w_disk_percent, policy.w_cpu_percent, policy.w_gpu_percent]
+def init_weight_list(weight_specs, policy, env, layer):
+    if layer == "InputEmbed":
+        dev_percents = [policy.InputEmbed_w_disk_percent, policy.InputEmbed_w_cpu_percent, policy.InputEmbed_w_gpu_percent]
+    elif layer == "OutputEmbed":
+        dev_percents = [policy.OutputEmbed_w_disk_percent, policy.OutputEmbed_w_cpu_percent, policy.OutputEmbed_w_gpu_percent]
+    elif layer == "SelfAttention":
+        dev_percents = [policy.SelfAttention_w_disk_percent, policy.SelfAttention_w_cpu_percent, policy.SelfAttention_w_gpu_percent]
+    elif layer == "MLP":
+        dev_percents = [policy.MLP_w_disk_percent, policy.MLP_w_cpu_percent, policy.MLP_w_gpu_percent]
+    else:
+        raise Exception("Wrong layer name")
+    # print(f"{layer} percent: {dev_percents}")
     dev_choices = [env.disk, env.cpu, env.gpu]
 
     sizes = [np.prod(spec[0]) for spec in weight_specs]
@@ -152,7 +183,7 @@ class InputEmbed:
             # w_pos
             ((s + 2, h), dtype, path + "decoder.embed_positions.weight"),
         ]
-        weights = init_weight_list(weight_specs, self.policy, self.env)
+        weights = init_weight_list(weight_specs, self.policy, self.env, 'InputEmbed')
 
         weight_home.store(weights)
 
@@ -223,7 +254,7 @@ class OutputEmbed:
             # w_token
             ((v, h), dtype, path + "decoder.embed_tokens.weight"),
         ]
-        weights = init_weight_list(weight_specs, self.policy, self.env)
+        weights = init_weight_list(weight_specs, self.policy, self.env, 'OutputEmbed')
 
         weight_home.store(weights)
         # print(f'outputembed first data {weights[2].data[0]}')
@@ -310,7 +341,7 @@ class SelfAttention:
             # b_ln
             ((h,), dtype, path + "_layer_norm.bias"),
         ]
-        weights = init_weight_list(weight_specs, self.policy, self.env)
+        weights = init_weight_list(weight_specs, self.policy, self.env, 'SelfAttention')
         weight_home.store(weights)
 
         # print(f'selfattention first data {weights[0].data[0][0]}')
@@ -508,7 +539,7 @@ class MLP:
             # b_ln
             ((h,), dtype, path + "final_layer_norm.bias"),
         ]
-        weights = init_weight_list(weight_specs, self.policy, self.env)
+        weights = init_weight_list(weight_specs, self.policy, self.env, 'MLP')
         weight_home.store(weights)
         # print(f'mlp first data {weights[0].data[0][0]}')
     def load_weight(self, weight_home, weight_read_buf, check_time):
@@ -574,42 +605,26 @@ class TransformerLayer:
         weight_home.store((home1, home2))
 
     def load_weight(self, weight_home, weight_read_buf, check_time):
-        if check_time:
-            timers("TransformerLayer_load_weight").start(self.sync)
         read_buf1, read_buf2 = ValueHolder(), ValueHolder()
         home1, home2 = weight_home.val
-        self.attention.load_weight(home1, read_buf1)
-        self.mlp.load_weight(home2, read_buf2)
+        self.attention.load_weight(home1, read_buf1, check_time)
+        self.mlp.load_weight(home2, read_buf2, check_time)
 
         weight_read_buf.store((read_buf1, read_buf2))
-        if check_time:
-            timers("TransformerLayer_load_weight").stop(self.sync)
 
     def load_cache(self, cache_home, cache_read_buf, i, check_time):
-        if check_time:
-            timers("TransformerLayer_load_cache").start(self.sync)
-        self.attention.load_cache(cache_home, cache_read_buf, i)
-        if check_time:
-            timers("TransformerLayer_load_cache").stop(self.sync)
+        self.attention.load_cache(cache_home, cache_read_buf, i, check_time)
 
     def store_cache(self, cache_home, cache_write_buf, i, check_time):
-        if check_time:
-            timers("TransformerLayer_store_cache").start(self.sync)
-        self.attention.store_cache(cache_home, cache_write_buf, i)
-        if check_time:
-            timers("TransformerLayer_store_cache").stop(self.sync)
+        self.attention.store_cache(cache_home, cache_write_buf, i, check_time)
 
     def forward(self, hidden, cache_read_buf, weight_read_buf, attention_mask,
                 cache_write_buf, i, check_time):
-        if check_time:
-            timers("TransformerLayer_comp").start(self.sync)
         read_buf1, read_buf2 = weight_read_buf.pop()
 
         self.attention.forward(hidden, cache_read_buf, read_buf1, attention_mask,
-                               cache_write_buf, i)
-        self.mlp.forward(hidden, None, read_buf2, attention_mask, None, i)
-        if check_time:
-            timers("TransformerLayer_comp").stop(self.sync)
+                               cache_write_buf, i, check_time)
+        self.mlp.forward(hidden, None, read_buf2, attention_mask, None, i, check_time)
 
 class OptLM:
     def __init__(self,
@@ -739,47 +754,32 @@ class OptLM:
             for x in v:
                 x.delete()
 
-    def load_hidden(self, i, j):
-        # Handle corner cases
-        if j == self.num_layers:
-            j = 0
-            i += 1
-            if i == self.execute_gen_len:
-                return
-
+    def load_hidden(self, i):
         # Load to hidden states buffers
-        dst = self.layers[j].compute
-        if j == 0:
-            gpu_batch_size = self.policy.gpu_batch_size
-            if i == 0:  # load from the input ids
-                val = dst.allocate((gpu_batch_size, self.task.prompt_len), np.int32)
-                val.load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
-            else:  # load from the last generated token
-                pos = self.task.prompt_len + i
-                val = dst.allocate((gpu_batch_size, 1), np.int32)
-                val.load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
-            self.hidden.store(val)
-
-    def store_hidden(self, i, j):
-        # Handle corner cases
-        if j == -1:
-            j = self.num_layers - 1
-            i -= 1
-            if i == -1:
-                return
-
-        # Store to hidden states buffers
-        if j == self.num_layers - 1:  # store to output
-            gpu_batch_size = self.policy.gpu_batch_size
-            ids = self.hidden.pop().data.detach().cpu().numpy()
+        dst = self.env.gpu
+        gpu_batch_size = self.policy.gpu_batch_size
+        if i == 0:  # load from the input ids
+            val = dst.allocate((gpu_batch_size, self.task.prompt_len), np.int32)
+            val.load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
+        else:  # load from the last generated token
             pos = self.task.prompt_len + i
-            if self.task.stop:
-                stopped = self.stopped[:gpu_batch_size]
-                self.output_ids[:gpu_batch_size, pos:pos+1] = np.where(
-                    stopped, self.config.pad_token_id, ids)
-                stopped[:] = np.logical_or(stopped, ids == self.task.stop)
-            else:
-                self.output_ids[:gpu_batch_size, pos:pos+1] = ids
+            val = dst.allocate((gpu_batch_size, 1), np.int32)
+            val.load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
+        self.hidden.store(val)
+
+    def store_hidden(self, i):
+        # Handle corner cases
+        # Store to hidden states buffers
+        gpu_batch_size = self.policy.gpu_batch_size
+        ids = self.hidden.pop().data.detach().cpu().numpy()
+        pos = self.task.prompt_len + i
+        if self.task.stop:
+            stopped = self.stopped[:gpu_batch_size]
+            self.output_ids[:gpu_batch_size, pos:pos+1] = np.where(
+                stopped, self.config.pad_token_id, ids)
+            stopped[:] = np.logical_or(stopped, ids == self.task.stop)
+        else:
+            self.output_ids[:gpu_batch_size, pos:pos+1] = ids
 
     def compute_layer(self, i, j, check_time):
         # Update the hidden in place
@@ -830,7 +830,7 @@ class OptLM:
                  debug_mode: Optional[str] = None,
                  cut_gen_len: Optional[int] = None,
                  verbose: int = 0,
-                 check_time: bool = True):
+                 check_time: bool = False):
         task = Task(
             inputs=inputs,
             prompt_len=len(inputs[0]),
@@ -892,14 +892,14 @@ class OptLM:
         for i in range(self.execute_gen_len):
             timers("generate").start()
             self.update_attention_mask(i)
-            self.load_hidden(i, j)
+            self.load_hidden(i)
             for j in range(self.num_layers):
                 self.load_weight(i, j+1, self.task.check_time)
                 self.load_cache(i, j+1, self.task.check_time)
                 self.compute_layer(i, j, self.task.check_time)
                 self.store_cache(i, j-1, self.task.check_time)
                 self.sync()
-            self.store_hidden(i, j)
+            self.store_hidden(i)
             timers("generate").stop()
 
             if self.task.stop and np.all(self.stopped):
@@ -907,12 +907,15 @@ class OptLM:
 
 def get_filename(args):
     model_size = args.model.split('-')[-1]
-    percent = ""
-    for i in range(len(args.percent)):
-        percent += str(args.percent[i]) + "-"
+    per_layer_percent = ""
+    for i in range(len(args.per_layer_percent)):
+        per_layer_percent += str(args.per_layer_percent[i]) + "-"
+    cache_percent = ""
+    for i in range(len(args.cache_percent)):
+        cache_percent += str(args.cache_percent[i]) + "-"
     filename = f"fo-{model_size}-gbs{args.gpu_batch_size}-" \
                f"prompt{args.prompt_len}-" \
-               f"gen{args.gen_len}-percent-{percent}"
+               f"gen{args.gen_len}-per_layer_percent-{per_layer_percent}-cache_percent-{cache_percent}"
     if args.cpu_cache_compute:
         filename += "cpu-cache"
     else:
@@ -950,8 +953,11 @@ def run_flexgen(args):
     env = ExecutionEnv(gpu=gpu, cpu=cpu, disk=disk, mixed=TorchMixedDevice([gpu, cpu, disk]))
 
     policy = Policy(args.gpu_batch_size, 
-                    args.percent[0], args.percent[1],
-                    args.percent[2], args.percent[3],
+                    args.per_layer_percent[0], args.per_layer_percent[1],
+                    args.per_layer_percent[2], args.per_layer_percent[3],
+                    args.per_layer_percent[4], args.per_layer_percent[5],
+                    args.per_layer_percent[6], args.per_layer_percent[7],
+                    args.cache_percent[0], args.cache_percent[1],
                     args.overlap, args.sep_layer, args.pin_weight,
                     args.cpu_cache_compute, args.attn_sparsity,
                     args.compress_weight,
@@ -974,15 +980,9 @@ def run_flexgen(args):
 
     try:
         print("warmup - generate")
+        
         output_ids = model.generate(
-            warmup_inputs, max_new_tokens=1, debug_mode=True, verbose=args.verbose)
-
-        print("benchmark - generate")
-        timers("generate").reset()
-        output_ids = model.generate(
-            inputs, max_new_tokens=args.gen_len,
-            debug_mode=args.debug_mode, cut_gen_len=cut_gen_len, verbose=args.verbose)
-        costs = timers("generate").costs
+            warmup_inputs, max_new_tokens=2, verbose=args.verbose, check_time=True)
         InputEmbed_load_weight = timers("InputEmbed_load_weight").costs
         InputEmbed_comp = timers("InputEmbed_comp").costs
         OutputEmbed_load_weight = timers("OutputEmbed_load_weight").costs
@@ -993,52 +993,33 @@ def run_flexgen(args):
         SelfAttention_comp = timers("SelfAttention_comp").costs
         MLP_load_weight = timers("MLP_load_weight").costs
         MLP_comp = timers("MLP_comp").costs
-        print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
-        print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
-        print('outputembed load weight', str(np.mean(OutputEmbed_load_weight)))
-        print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
+        print('InputEmbed')
         print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
+        print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
+
+        print('SelfAttention')
+        print('MLP load weight', str(np.mean(MLP_load_weight)))
+        print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
+
+        print('MLP')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('MLP comp', str(np.mean(MLP_comp[1:])))
         print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
         print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
-        print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
-        print('MLP load weight', str(np.mean(MLP_load_weight)))
-        print('MLP comp', str(np.mean(MLP_comp[1:])))
+
+        print('OutputEmbed')
+        print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
+        print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
+
+        print("benchmark - generate")
+        timers("generate").reset()
+        output_ids = model.generate(
+            inputs, max_new_tokens=args.gen_len,
+            debug_mode=args.debug_mode, cut_gen_len=cut_gen_len, verbose=args.verbose)
+        costs = timers("generate").costs
+        
               
-        # if args.sep_layer == False:
-        #     TransformerLayer_load_weight = timers("TransformerLayer_load_weight").costs
-        #     TransformerLayer_load_cache = timers("TransformerLayer_load_cache").costs
-        #     TransformerLayer_store_cache = timers("TransformerLayer_store_cache").costs
-        #     TransformerLayer_comp =timers("TransformerLayer_comp").costs
-        # with open('weights.txt', 'w') as f:
-        #     f.write(TransformerLayer_load_weight)
-        #     f.write('/n')
-        #     f.write(TransformerLayer_load_cache)
-        #     f.write('/n')
-        #     f.write(TransformerLayer_store_cache)
-        #     f.write('/n')
-        #     f.write(TransformerLayer_comp)
-        # with open('weights.txt', 'w') as f:
-        #     f.write('InputEmbed_load_weight\n')
-        #     f.write(str(InputEmbed_load_weight))
-        #     f.write('\nInputEmbed_comp\n')
-        #     f.write(str(InputEmbed_comp))
-        #     f.write('\nOutputEmbed_load_weight\n')
-        #     f.write(str(OutputEmbed_load_weight))
-        #     f.write('\nOutputEmbed_comp\n')
-        #     f.write(str(OutputEmbed_comp))
-        #     f.write('\nSelfAttention_load_weight\n')
-        #     f.write(str(SelfAttention_load_weight))
-        #     f.write('\nSelfAttention_load_cache\n')
-        #     f.write(str(SelfAttention_load_cache))
-        #     f.write('\nSelfAttention_store_cache\n')
-        #     f.write(str(SelfAttention_store_cache))
-        #     f.write('\nSelfAttention_comp\n')
-        #     f.write(str(SelfAttention_comp))
-        #     f.write('\nMLP_load_weight\n')
-        #     f.write(str(MLP_load_weight))
-        #     f.write('\nMLP_comp\n')
-        #     f.write(str(MLP_comp))
-        #     f.close()
     finally:
         env.close_copy_threads()
 
@@ -1083,7 +1064,7 @@ def run_flexgen(args):
 
 
 def add_parser_arguments(parser):
-    parser.add_argument("--model", type=str, default="facebook/opt-6.7b",
+    parser.add_argument("--model", type=str, default="facebook/opt-30b",
         help="The model name.")
     parser.add_argument("--path", type=str, default="~/opt_weights",
         help="The path to the model weights. If there are no cached weights, "
@@ -1096,14 +1077,23 @@ def add_parser_arguments(parser):
         help="Cut generation length for fast debugging.")
     parser.add_argument("--debug-mode", type=str,
         choices=["fewer_batch", "breakdown"])
-    parser.add_argument("--gpu-batch-size", type=int, default=4)
-    parser.add_argument("--percent", nargs="+", type=int,
-        default=[100, 0, 100, 0],
-        help="Six numbers. They are "
-         "the percentage of weight on GPU, "
-         "the percentage of weight on CPU, "
+    parser.add_argument("--gpu-batch-size", type=int, default=1)
+    parser.add_argument("--cache-percent", nargs="+", type=int,
+        default=[100, 0],
+        help="two numbers. They are "
          "the percentage of attention cache on GPU, "
          "the percentage of attention cache on CPU, ")
+    parser.add_argument("--per-layer-percent", nargs="+", type=int,
+        default=[0, 100, 0, 100, 0, 100, 0, 100],
+        help="Six numbers. They are "
+         "the percentage of InputEmbed weight on GPU, "
+         "the percentage of InputEmbed weight on CPU, "
+         "the percentage of OutputEmbed weight on GPU, "
+         "the percentage of OutputEmbed weight on CPU, "
+         "the percentage of SelfAttention weight on GPU, "
+         "the percentage of SelfAttention weight on CPU, "
+         "the percentage of MLP weight on GPU, "
+         "the percentage of MLP weight on CPU, ")
     parser.add_argument("--sep-layer", type=str2bool, nargs='?',
         const=True, default=True)
     parser.add_argument("--pin-weight", type=str2bool, nargs="?",
@@ -1130,6 +1120,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     print(args)
     # args = argparse.Namespace(model='facebook/opt-66b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=1, percent=[0, 100, 0, 100], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
-    assert len(args.percent) == 4
+    assert len(args.per_layer_percent) == 8
+    assert len(args.cache_percent) == 2
+    assert args.sep_layer == True
     run_flexgen(args)
 

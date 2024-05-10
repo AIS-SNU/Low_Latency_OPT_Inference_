@@ -1040,7 +1040,6 @@ class TorchMixedDevice:
             config.n_head, config.input_dim, task.prompt_len, task.gen_len,
             policy.gpu_batch_size)
         shape = (prompt_len + gen_len - 1, gpu_batch_size * num_head, hidden_size // num_head)
-
         # We have to round to a multiple of `num_head`
         if policy.cache_disk_percent == 0:
             len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // num_head * num_head
