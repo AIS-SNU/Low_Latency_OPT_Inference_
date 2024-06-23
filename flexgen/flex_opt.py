@@ -1032,6 +1032,7 @@ class OptLM:
             do_sample=do_sample,
             temperature=temperature,
             stop=stop,
+            check_time=False
         )
         num_layers = self.num_layers
         num_gpu_batches = self.num_gpu_batches
@@ -1466,7 +1467,7 @@ def run_flexgen(args):
 
 
 def add_parser_arguments(parser):
-    parser.add_argument("--model", type=str, default="facebook/opt-6.7b",
+    parser.add_argument("--model", type=str, default="facebook/opt-1.3b",
         help="The model name.")
     parser.add_argument("--path", type=str, default="~/opt_weights",
         help="The path to the model weights. If there are no cached weights, "
@@ -1479,10 +1480,10 @@ def add_parser_arguments(parser):
         help="Cut generation length for fast debugging.")
     parser.add_argument("--debug-mode", type=str,
         choices=["fewer_batch", "breakdown"])
-    parser.add_argument("--gpu-batch-size", type=int, default=4)
+    parser.add_argument("--gpu-batch-size", type=int, default=1)
     parser.add_argument("--num-gpu-batches", type=int, default=1)
     parser.add_argument("--percent", nargs="+", type=int,
-        default=[100, 0, 100, 0, 100, 0],
+        default=[70, 30, 100, 0, 100, 0],
         help="Six numbers. They are "
          "the percentage of weight on GPU, "
          "the percentage of weight on CPU, "
@@ -1515,6 +1516,6 @@ if __name__ == "__main__":
     add_parser_arguments(parser)
     args = parser.parse_args()
     print(args)
-    # args = argparse.Namespace(model='facebook/opt-1.3b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=4, num_gpu_batches=1, percent=[100, 0, 100, 0, 100, 0], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
+    # args = argparse.Namespace(model='facebook/opt-1.3b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=4, num_gpu_batches=1, percent=[30, 30, 0, 100, 100, 0], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
     assert len(args.percent) == 6
     run_flexgen(args)

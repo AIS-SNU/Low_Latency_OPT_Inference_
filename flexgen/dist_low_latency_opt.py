@@ -24,8 +24,7 @@ from flexgen.utils import (Task, ExecutionEnv, GB, T, ValueHolder,
     array_1d, array_2d, array_3d, array_4d, str2bool, project_decode_latency, torch_dtype_to_np_dtype)
 
 
-def init_weight_list_dist(weight_specs, policy, env, rank, world_size):
-    dev_percents = [policy.w_disk_percent, policy.w_cpu_percent, policy.w_gpu_percent]
+def init_weight_list_dist(dev_percents, weight_specs, policy, env, rank, world_size):
     dev_choices = [env.disk, env.cpu, env.gpu]
     sizes = [np.prod(spec[0]) for spec in weight_specs]
     sizes_cumsum = np.cumsum(sizes)
@@ -102,7 +101,8 @@ class DistInputEmbed(InputEmbed):
             # w_pos
             ((s + 2, h), dtype, path + "decoder.embed_positions.weight", 1),
         ]
-        weights = init_weight_list_dist(weight_specs, self.policy, self.env, self.rank, self.world_size)
+        dev_percents = [self.policy.InputEmbed_w_disk_percent, self.policy.InputEmbed_w_cpu_percent, self.policy.InputEmbed_w_gpu_percent]
+        weights = init_weight_list_dist(dev_percents, weight_specs, self.policy, self.env, self.rank, self.world_size)
 
         weight_home.store(weights)
         # print(f'inputembed rank {self.rank} first data {weights[0].data[0][0]}')
@@ -138,7 +138,8 @@ class DistOutputEmbed(OutputEmbed):
             # w_token
             ((v, h), dtype, path + "decoder.embed_tokens.weight", 0),
         ]
-        weights = init_weight_list_dist(weight_specs, self.policy, self.env, self.rank, self.world_size)
+        dev_percents = [self.policy.OutputEmbed_w_disk_percent, self.policy.OutputEmbed_w_cpu_percent, self.policy.OutputEmbed_w_gpu_percent]
+        weights = init_weight_list_dist(dev_percents, weight_specs, self.policy, self.env, self.rank, self.world_size)
         weight_home.store(weights)
         # print(f'outputembed rank {self.rank} first data {weights[2].data[0]}')
     def load_weight(self, weight_home, weight_read_buf):
@@ -189,7 +190,8 @@ class DistSelfAttention(SelfAttention):
             # b_ln
             ((h,), dtype, path + "_layer_norm.bias", None),
         ]
-        weights = init_weight_list_dist(weight_specs, self.policy, self.env, self.rank, self.world_size)
+        dev_percents = [self.policy.SelfAttention_w_disk_percent, self.policy.SelfAttention_w_cpu_percent, self.policy.SelfAttention_w_gpu_percent]
+        weights = init_weight_list_dist(dev_percents, weight_specs, self.policy, self.env, self.rank, self.world_size)
         weight_home.store(weights)
         # print(f'selfattention rank {self.rank} first data {weights[0].data[0][0]}')
     def init_cache_one_gpu_batch(self, cache_home):
@@ -262,7 +264,8 @@ class DistMLP(MLP):
             # b_ln
             ((h,), dtype, path + "final_layer_norm.bias", None),
         ]
-        weights = init_weight_list_dist(weight_specs, self.policy, self.env, self.rank, self.world_size)
+        dev_percents = [self.policy.MLP_w_disk_percent, self.policy.MLP_w_cpu_percent, self.policy.MLP_w_gpu_percent]
+        weights = init_weight_list_dist(dev_percents, weight_specs, self.policy, self.env, self.rank, self.world_size)
         weight_home.store(weights)
         # print(f'mlp rank {self.rank} first data {weights[0].data[0][0]}')
 
@@ -470,7 +473,8 @@ class DistTP(OptLM):
                  stop: Optional[int] = None,
                  debug_mode: Optional[str] = None,
                  cut_gen_len: Optional[int] = None,
-                 verbose: int = 0):
+                 verbose: int = 0,
+                 check_time: bool = False):
         task = Task(
             inputs=inputs,
             prompt_len=len(inputs[0]),
@@ -479,6 +483,7 @@ class DistTP(OptLM):
             do_sample=do_sample,
             temperature=temperature,
             stop=stop,
+            check_time=check_time
         )
         assert stop is None, "Not implemented."
         world_size = self.world_size
@@ -606,8 +611,11 @@ def run_flexgen_dist(args):
     comm_test(gpu.dev if args.comm_device == "gpu" else cpu.dev)
 
     policy = Policy(args.gpu_batch_size,
-                    args.percent[0], args.percent[1],
-                    args.percent[2], args.percent[3],
+                    args.per_layer_percent[0], args.per_layer_percent[1],
+                    args.per_layer_percent[2], args.per_layer_percent[3],
+                    args.per_layer_percent[4], args.per_layer_percent[5],
+                    args.per_layer_percent[6], args.per_layer_percent[7],
+                    args.cache_percent[0], args.cache_percent[1],
                     args.overlap, args.sep_layer, args.pin_weight,
                     args.cpu_cache_compute, args.attn_sparsity,
                     args.compress_weight,
@@ -729,8 +737,10 @@ if __name__ == "__main__":
         args.rank = 0
         args.local_rank = 0
 
-    assert len(args.percent) == 4
-
+    assert len(args.per_layer_percent) == 8
+    assert len(args.cache_percent) == 2
+    if args.rank == 0:
+        print(args)
     try:
         run_flexgen_dist(args)
     except Exception as e:

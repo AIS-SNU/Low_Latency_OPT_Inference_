@@ -75,7 +75,7 @@ class TorchTensor:
     """
     name_count = count()
 
-    def __init__(self, shape, dtype, data, device, name=None):
+    def __init__(self, shape, dtype, data, device, name=None, seg_dim=None):
         if isinstance(data, torch.Tensor):
             assert data.device == device.dev
 
@@ -88,6 +88,7 @@ class TorchTensor:
         self.delete_file = True
 
         self.name = name or TorchTensor.next_name()
+        self.seg_dim=seg_dim
 
     @property
     def bytes(self):
@@ -106,7 +107,6 @@ class TorchTensor:
         if self.device.device_type == DeviceType.DISK:
             self.device.delete(self)
         self.device = self.data = None
-
     def load_from_np(self, np_array):
         if self.device.device_type == DeviceType.DISK:
             with open(self.data, "wb") as fout:
@@ -137,14 +137,26 @@ class TorchTensor:
             ret = dst.allocate(shape, torch_dtype_to_np_dtype[self.dtype], self.data[2])
         else:
             ret = dst.allocate(shape, torch_dtype_to_np_dtype[self.dtype])
-        general_copy(ret, None, self, src_indices)
+        general_copy(ret, None, self, src_indices, seg_dim=1)
         return ret
-
+    def balanced_copy(self, dst, dst_seg_lengths, seg_dim):
+        # src_seg_lengths = [self.data[1][i] - self.data[1][i-1] for i in range(1, len(self.data[1]))]
+        
+        if self.data[1] == dst_seg_lengths:
+            return self, False
+        else:
+            if seg_dim == None:
+                ret = dst.allocate_all(self.shape, torch_dtype_to_np_dtype[self.dtype])
+                general_copy(ret, None, self, None, seg_dim)
+                return ret, True
+            else:
+                ret = dst.allocate(self.shape, torch_dtype_to_np_dtype[self.dtype], dst_seg_lengths, seg_dim=seg_dim)
+                general_copy(ret, None, self, None, seg_dim)
+                return ret, True
     def smart_copy(self, dst, src_indices=None):
         if self.device == dst:
             return self, False
         return self.copy(dst, src_indices=src_indices), True
-
     def move(self, dst):
         if self.device == dst:
             return self
@@ -155,7 +167,6 @@ class TorchTensor:
     def __str__(self):
         return (f"TorchTensor(shape={self.shape}, dtype={str(self.dtype)}, "
                 f"device={self.device.name if self.device else None})")
-
 
 class TorchDevice:
     """Wrap tensor and computation APIs of a single CPU or GPU."""
@@ -236,6 +247,7 @@ class TorchDevice:
              torch.ones((bs, 1), dtype=attention_mask.dtype, device=self.dev)), dim=1)
         if donate[0]: attention_mask.delete()
         return TorchTensor.create_from_torch(data, self)
+
     def opt_input_embed_dist(self, inputs, attention_mask, w_token, w_pos, pad_token_id, donate, world_size):
         # decompress weights
         if w_token.device.device_type == DeviceType.COMPRESSED:
@@ -249,6 +261,35 @@ class TorchDevice:
 
         # token embedding
 
+        token_embed = F.embedding(token_ids, w_token.data, pad_token_id)
+        # pos embedding
+        positions = torch.cumsum(mask, dim=1).int() * mask + 1
+
+        # cut positions if `past_key_values_length` is > 0
+        past_key_values_length = mask.shape[1] - token_ids.shape[1]
+        positions = positions[:, past_key_values_length:]
+
+        pos_embed = F.embedding(positions, w_pos.data)
+        data = token_embed + pos_embed
+        b, s, dist_h = data.shape
+        output = torch.empty((world_size, b, s, dist_h) , device=self.dev, dtype=data.dtype)
+        dist.all_gather_into_tensor(output, data)
+        output = output.permute(1, 2, 0, 3).reshape(b, s, -1)
+
+        return TorchTensor.create_from_torch(output, self)
+    def opt_input_embed_balanced(self, inputs, attention_mask, w_token, w_pos, pad_token_id, donate, world_size):
+        # decompress weights
+        if w_token.device.device_type == DeviceType.COMPRESSED:
+            w_token = w_token.device.decompress(w_token)
+            w_pos = w_pos.device.decompress(w_pos)
+
+        token_ids = inputs.data
+        mask = attention_mask.data
+        if donate[0]: inputs.delete()
+        if donate[1]: attention_mask.delete()
+
+        # token embedding
+        
         token_embed = F.embedding(token_ids, w_token.data, pad_token_id)
         # pos embedding
         positions = torch.cumsum(mask, dim=1).int() * mask + 1
@@ -999,7 +1040,6 @@ class TorchDisk:
 
 
 # Segment dimension for tensors stored on TorchMixedDevice
-SEG_DIM = 1
 
 class TorchMixedDevice:
     """Manage tensors stored on multiple physical devices."""
@@ -1009,8 +1049,8 @@ class TorchMixedDevice:
         self.device_type = DeviceType.MIXED
         self.base_devices = base_devices
 
-    def allocate(self, shape, dtype, seg_lengths, pin_memory=None, name=None):
-        assert sum(seg_lengths) == shape[SEG_DIM]
+    def allocate(self, shape, dtype, seg_lengths, pin_memory=None, name=None, seg_dim=1):
+        assert sum(seg_lengths) == shape[seg_dim]
         assert len(seg_lengths) == len(self.base_devices)
         seg_points = [0]
         for l in seg_lengths:
@@ -1023,32 +1063,56 @@ class TorchMixedDevice:
             if seg_len == 0:
                 tensors.append(None)
             else:
-                seg_shape = shape[:SEG_DIM] + (seg_len,) + shape[SEG_DIM+1:]
+                seg_shape = shape[:seg_dim] + (seg_len,) + shape[seg_dim+1:]
                 tensors.append(devices[i].allocate(seg_shape, dtype,
                     pin_memory=pin_memory))
 
         return TorchTensor(shape, np_dtype_to_torch_dtype[dtype],
-                           (tensors, seg_points), self, name=name)
+                        (tensors, seg_points), self, name=name)
+    ## allocate tensor with same size at both gpu and cpu 
+    # def allocate_balanced(self, shape, dtype, seg_lengths, pin_memory=None, name=None, seg_dim=1):
+    #     assert sum(seg_lengths) == shape[seg_dim]
+    #     assert len(seg_lengths) == len(self.base_devices)
+    #     seg_points = [0]
+    #     for l in seg_lengths:
+    #         seg_points.append(seg_points[-1] + l)
+    #     devices = self.base_devices
+    #     tensors = []
+    #     for i in range(len(devices)):
+    #         if seg_lengths[i] == 0:
+    #             tensors.append(None)
+    #         else:
+    #             seg_shape = shape[:seg_dim] + (seg_lengths[i],) + shape[seg_dim+1:]
+    #             tensors.append(devices[i].allocate(seg_shape, dtype, pin_memory=pin_memory))
+    #     return TorchTensor(shape, np_dtype_to_torch_dtype[dtype], tensors, self, name=name, seg_dim=seg_dim)
 
+    ## allocate tensor with same size at both gpu and cpu 
+    def allocate_all(self, shape, dtype, pin_memory=None, name=None):
+        devices = self.base_devices
+        tensors = []
+        for i in range(2):
+            tensors.append(devices[i].allocate(shape, dtype, pin_memory=pin_memory))
+        tensors.append(None)
+        return TorchTensor(shape, np_dtype_to_torch_dtype[dtype], (tensors,None), self, name=name)
     def delete(self, tensor):
         for x in self.tensor.data[0]:
             if x:
                 x.delete()
-
-    def init_cache_one_gpu_batch(self, config, task, policy):
+    def init_cache_one_gpu_batch(self, config, task, policy, seg_dim=1):
         num_head, hidden_size, prompt_len, gen_len, gpu_batch_size = (
             config.n_head, config.input_dim, task.prompt_len, task.gen_len,
             policy.gpu_batch_size)
         shape = (prompt_len + gen_len - 1, gpu_batch_size * num_head, hidden_size // num_head)
+
         # We have to round to a multiple of `num_head`
         if policy.cache_disk_percent == 0:
-            len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // num_head * num_head
-            len_cpu = shape[SEG_DIM]  - len_gpu
+            len_gpu = int(shape[seg_dim] * policy.cache_gpu_percent / 100) // num_head * num_head
+            len_cpu = shape[seg_dim]  - len_gpu
             len_disk = 0
         else:
-            len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // num_head * num_head
-            len_cpu = int(shape[SEG_DIM] * policy.cache_cpu_percent / 100) // num_head * num_head
-            len_disk = shape[SEG_DIM] - len_gpu - len_cpu
+            len_gpu = int(shape[seg_dim] * policy.cache_gpu_percent / 100) // num_head * num_head
+            len_cpu = int(shape[seg_dim] * policy.cache_cpu_percent / 100) // num_head * num_head
+            len_disk = shape[seg_dim] - len_gpu - len_cpu
         lens = [len_gpu, len_cpu, len_disk]
 
         pin_memory = False
@@ -1057,8 +1121,75 @@ class TorchMixedDevice:
         v_cache = self.allocate(shape, np.float16,
             seg_lengths=lens, pin_memory=pin_memory)
         return k_cache, v_cache
-    
-    def init_cache_one_gpu_batch_dist(self, config, task, policy, world_size):
+    def init_weight_balanced(self, weight_specs, dev_percents, n_head=None):
+        weights = []
+        
+        for i in range(len(weight_specs)):
+            shape, dtype, filename, seg_dim = weight_specs[i]
+            
+            if len(shape) < 2:
+                pin_memory = True
+            else:
+                pin_memory = False
+            w_data = self.base_devices[1].allocate(shape, dtype, pin_memory=pin_memory)
+            if "_DUMMY_" not in filename:
+                w_data.load_from_np_file(weight_specs[i][2])
+            else:
+                w_data.load_from_np(np.ones(shape, dtype))
+            if seg_dim is not None:
+                ## all weight in gpu and cpu
+                if dev_percents[2] == 0:
+                    if n_head:
+                        len_gpu = int(n_head * dev_percents[0] / 100) * shape[seg_dim] // n_head
+                        len_cpu = shape[seg_dim] - len_gpu
+                        len_disk = 0
+                    else:
+                        len_gpu = int(shape[seg_dim] * dev_percents[0] / 100)
+                        len_cpu = shape[seg_dim] - len_gpu
+                        len_disk = 0
+                ## all weight in gpu, cpu and disk
+                else:
+                    if n_head:
+                        len_gpu = int(n_head * dev_percents[0] / 100) * shape[seg_dim] // n_head
+                        len_cpu = int(n_head * dev_percents[1] / 100) * shape[seg_dim] // n_head
+                        len_disk = shape[seg_dim] - len_gpu - len_cpu
+                    else:
+                        len_gpu = int(shape[seg_dim] * dev_percents[0] / 100)
+                        len_cpu = int(shape[seg_dim] * dev_percents[1] / 100)
+                        len_disk = shape[seg_dim] - len_gpu - len_cpu
+                lens = [len_gpu, len_cpu, len_disk]
+
+
+                weight = self.allocate(shape, dtype, seg_lengths=lens, pin_memory=pin_memory, seg_dim=seg_dim)
+                general_copy(weight, None, w_data, None, seg_dim=seg_dim)
+            else: ##split dim is None, distribute whole weight to both gpu and cpu
+                weight = self.allocate_all(shape, dtype, pin_memory=pin_memory)
+                general_copy(weight, None, w_data, None, seg_dim=seg_dim)
+            weights.append(weight)
+            w_data.delete()
+        return weights
+    def init_cache_one_gpu_batch_balanced(self, config, task, policy, seg_dim=1):
+        num_head, hidden_size, prompt_len, gen_len, gpu_batch_size = (
+            config.n_head, config.input_dim, task.prompt_len, task.gen_len,
+            policy.gpu_batch_size)
+        shape = (prompt_len + gen_len - 1, gpu_batch_size * num_head, hidden_size // num_head)
+        if policy.cache_disk_percent == 0:
+            len_gpu = gpu_batch_size * int(num_head * policy.cache_gpu_percent / 100)
+            len_cpu = shape[seg_dim] - len_gpu
+            len_disk = 0
+        else:
+            len_gpu = gpu_batch_size * int(num_head * policy.cache_gpu_percent / 100)
+            len_cpu = gpu_batch_size * int(num_head * policy.cache_gpu_percent / 100)
+            len_disk = shape[seg_dim] - len_gpu - len_cpu
+        lens = [len_gpu, len_cpu, len_disk]
+
+        pin_memory = False
+        k_cache = self.allocate(shape, np.float16,
+            seg_lengths=lens, pin_memory=pin_memory)
+        v_cache = self.allocate(shape, np.float16,
+            seg_lengths=lens, pin_memory=pin_memory)
+        return k_cache, v_cache
+    def init_cache_one_gpu_batch_dist(self, config, task, policy, world_size, seg_dim=1):
         raise NotImplementedError
         num_head, hidden_size, prompt_len, gen_len, gpu_batch_size = (
             config.n_head, config.input_dim, task.prompt_len, task.gen_len,
@@ -1068,13 +1199,13 @@ class TorchMixedDevice:
         
         # We have to round to a multiple of `num_head`
         if policy.cache_disk_percent == 0:
-            len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // num_head * num_head
-            len_cpu = shape[SEG_DIM]  - len_gpu
+            len_gpu = int(shape[seg_dim] * policy.cache_gpu_percent / 100) // num_head * num_head
+            len_cpu = shape[seg_dim]  - len_gpu
             len_disk = 0
         else:
-            len_gpu = int(shape[SEG_DIM] * policy.cache_gpu_percent / 100) // num_head * num_head
-            len_cpu = int(shape[SEG_DIM] * policy.cache_cpu_percent / 100) // num_head * num_head
-            len_disk = shape[SEG_DIM] - len_gpu - len_cpu
+            len_gpu = int(shape[seg_dim] * policy.cache_gpu_percent / 100) // num_head * num_head
+            len_cpu = int(shape[seg_dim] * policy.cache_cpu_percent / 100) // num_head * num_head
+            len_disk = shape[seg_dim] - len_gpu - len_cpu
         lens = [len_gpu, len_cpu, len_disk]
 
         pin_memory = False
@@ -1111,29 +1242,62 @@ class TorchLink:
 
         return size / bandwidth
 
+def get_seg_points(seg_lengths):
+    lst = [0]
+    for i in range(seg_lengths):
+        lst.append(i + lst[-1])
+    return lst
+
+    
 
 def general_copy(dst: TorchTensor, dst_indices: Tuple[slice],
-                 src: TorchTensor, src_indices: Tuple[slice]):
+                 src: TorchTensor, src_indices: Tuple[slice], seg_dim):
     """Launch a general asynchronous copy between two tensors.
     It is equivalent to `dst[dst_indices] = src[src_indices]` in numpy syntax.
     The copy is asynchronous. To wait for the copy to complete, you need to call
     >>> env.disk.synchronize()
     >>> torch.cuda.synchronize()
     """
-    if dst.device.device_type == DeviceType.MIXED:
-        # The tensor is on mixed devices, do recursive calls
+    if src.device.device_type == DeviceType.MIXED and dst.device.device_type == DeviceType.MIXED:
+        # if seg_dim == None: ## allocate_all
+        #     dst_indices = dst_indices or tuple(slice(0, x) for x in dst.shape)
+        #     src_indices = src_indices or tuple(slice(0, x) for x in src.shape)
+        #     for i in range(len(dst.device.base_devices))
+        # else:  
+        dst_seg_points = dst.data[1]
+        src_seg_points = src.data[1]
+        dst_indices = dst_indices or tuple(slice(0, x) for x in dst.shape)
+        src_indices = src_indices or tuple(slice(0, x) for x in src.shape)
+        for i in range(len(src.device.base_devices)):
+            if src_seg_points[i] == src_seg_points[i+1]:
+                continue
+            for j in range(len(dst.device.base_devices)):
+                if dst_seg_points[j] == dst_seg_points[j+1]:
+                    continue
+                start = max(src_seg_points[i], dst_seg_points[j])
+                end = min(src_seg_points[i+1], dst_seg_points[j+1])
+                if start >= end:
+                    continue
+                src_indices = src_indices[:seg_dim] + (slice(start - src_seg_points[i], end - src_seg_points[i]), ) + src_indices[seg_dim + 1:]
+                dst_indices = dst_indices[:seg_dim] + (slice(start - dst_seg_points[j], end - dst_seg_points[j]), ) + dst_indices[seg_dim + 1:]
+                general_copy(dst.data[0][j], dst_indices, src.data[0][i], src_indices, seg_dim=seg_dim)
+
+    elif dst.device.device_type == DeviceType.MIXED:
         assert src.device.device_type != DeviceType.MIXED
         seg_points = dst.data[1]
-
-        for i in range(len(dst.device.base_devices)):
-            if seg_points[i] == seg_points[i+1]:
-                continue
-            src_indices = src_indices or tuple(slice(0, x) for x in src.shape)
-            dst_indices = dst_indices or tuple(slice(0, x) for x in dst.shape)
-            tmp_src_indices = cut_indices(src_indices, seg_points[i], seg_points[i+1])
-            tmp_dst_indices = cut_indices(dst_indices, seg_points[i], seg_points[i+1],
-                base=seg_points[i])
-            general_copy(dst.data[0][i], tmp_dst_indices, src, tmp_src_indices)
+        if seg_dim == None:
+            for i in range(len(dst.device.base_devices)):
+                if dst.data[0][i] is not None:
+                    general_copy(dst.data[0][i], None, src, None, seg_dim=seg_dim)
+        else:
+            for i in range(len(dst.device.base_devices)):
+                if seg_points[i] == seg_points[i+1]:
+                    continue
+                src_indices = src_indices or tuple(slice(0, x) for x in src.shape)
+                dst_indices = dst_indices or tuple(slice(0, x) for x in dst.shape)
+                tmp_src_indices = cut_indices(src_indices, seg_points[i], seg_points[i+1], seg_dim=seg_dim)
+                tmp_dst_indices = cut_indices(dst_indices, seg_points[i], seg_points[i+1], base=seg_points[i], seg_dim=seg_dim)
+                general_copy(dst.data[0][i], tmp_dst_indices, src, tmp_src_indices, seg_dim=seg_dim)
     elif src.device.device_type == DeviceType.MIXED:
         # The tensor is on mixed devices, do recursive calls
         assert dst.device.device_type != DeviceType.MIXED
@@ -1144,10 +1308,9 @@ def general_copy(dst: TorchTensor, dst_indices: Tuple[slice],
                 continue
             src_indices = src_indices or tuple(slice(0, x) for x in src.shape)
             dst_indices = dst_indices or tuple(slice(0, x) for x in dst.shape)
-            tmp_src_indices = cut_indices(src_indices, seg_points[i], seg_points[i+1],
-                base=seg_points[i])
-            tmp_dst_indices = cut_indices(dst_indices, seg_points[i], seg_points[i+1])
-            general_copy(dst, tmp_dst_indices, src.data[0][i], tmp_src_indices)
+            tmp_src_indices = cut_indices(src_indices, seg_points[i], seg_points[i+1], base=seg_points[i], seg_dim=seg_dim)
+            tmp_dst_indices = cut_indices(dst_indices, seg_points[i], seg_points[i+1], seg_dim=seg_dim)
+            general_copy(dst, tmp_dst_indices, src.data[0][i], tmp_src_indices, seg_dim=seg_dim)
     elif (src.device.device_type == DeviceType.COMPRESSED or
           dst.device.device_type == DeviceType.COMPRESSED):
         # The tensor is compressed, do recursive calls
@@ -1179,12 +1342,14 @@ def general_copy(dst: TorchTensor, dst_indices: Tuple[slice],
         dst.copy_(src, non_blocking=True)
 
 
-def cut_indices(indices, start, stop, base=0):
+def cut_indices(indices, start, stop, base=0, seg_dim=None):
     assert all(x.step is None for x in indices)
-    seg = indices[SEG_DIM]
-    return (indices[:SEG_DIM] +
+    if seg_dim == None:
+        return indices
+    seg = indices[seg_dim]
+    return (indices[:seg_dim] +
             (slice(max(seg.start, start) - base, min(seg.stop, stop) - base),) +
-            indices[SEG_DIM + 1:])
+            indices[seg_dim + 1:])
 
 
 def map_to_torch_tensor(tensor, indices):

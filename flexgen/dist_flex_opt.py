@@ -608,6 +608,8 @@ def run_flexgen_dist(args):
         decode_latency = sum(generate_costs)
     decode_throughput = num_prompts * (gen_len - 1) / max(decode_latency, 1e-10)
     num_generated_tokens = num_prompts * gen_len
+    print(gen_len)
+    print(num_prompts)
     total_latency = prefill_latency + decode_latency
     total_throughput = num_generated_tokens / total_latency
     _, gpu_peak_mem = gpu.mem_stats()
@@ -682,7 +684,8 @@ if __name__ == "__main__":
         args.local_rank = 0
 
     assert len(args.percent) == 6
-
+    if args.rank == 0:
+        print(args)
     try:
         run_flexgen_dist(args)
     except Exception as e:

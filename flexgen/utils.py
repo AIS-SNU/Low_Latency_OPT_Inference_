@@ -29,7 +29,7 @@ class Task:
     do_sample: bool
     temperature: float
     stop: Optional[int]
-    check_time: bool
+    check_time: Optional[bool] = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -142,7 +142,6 @@ def cpu_mem_stats():
         total_mem += mem
 
     return total_mem
-
 
 def torch_mem_stats():
     objects = gc.get_objects()
