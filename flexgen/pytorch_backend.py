@@ -277,35 +277,6 @@ class TorchDevice:
         output = output.permute(1, 2, 0, 3).reshape(b, s, -1)
 
         return TorchTensor.create_from_torch(output, self)
-    def opt_input_embed_balanced(self, inputs, attention_mask, w_token, w_pos, pad_token_id, donate, world_size):
-        # decompress weights
-        if w_token.device.device_type == DeviceType.COMPRESSED:
-            w_token = w_token.device.decompress(w_token)
-            w_pos = w_pos.device.decompress(w_pos)
-
-        token_ids = inputs.data
-        mask = attention_mask.data
-        if donate[0]: inputs.delete()
-        if donate[1]: attention_mask.delete()
-
-        # token embedding
-        
-        token_embed = F.embedding(token_ids, w_token.data, pad_token_id)
-        # pos embedding
-        positions = torch.cumsum(mask, dim=1).int() * mask + 1
-
-        # cut positions if `past_key_values_length` is > 0
-        past_key_values_length = mask.shape[1] - token_ids.shape[1]
-        positions = positions[:, past_key_values_length:]
-
-        pos_embed = F.embedding(positions, w_pos.data)
-        data = token_embed + pos_embed
-        b, s, dist_h = data.shape
-        output = torch.empty((world_size, b, s, dist_h) , device=self.dev, dtype=data.dtype)
-        dist.all_gather_into_tensor(output, data)
-        output = output.permute(1, 2, 0, 3).reshape(b, s, -1)
-
-        return TorchTensor.create_from_torch(output, self)
     def opt_input_embed(self, inputs, attention_mask, w_token, w_pos, pad_token_id, donate):
         # decompress weights
         if w_token.device.device_type == DeviceType.COMPRESSED:
@@ -1121,6 +1092,17 @@ class TorchMixedDevice:
         v_cache = self.allocate(shape, np.float16,
             seg_lengths=lens, pin_memory=pin_memory)
         return k_cache, v_cache
+    def gather(self, shape, gpu_tensor, cpu_tensor, seg_dim):
+        gpu_len = gpu_tensor.shape[seg_dim]
+        cpu_len = gpu_tensor.shape[seg_dim]
+        input = TorchTensor(shape, dtype=gpu_tensor.dtype, data=[[gpu_tensor, cpu_tensor, None], [0, gpu_len, gpu_len + cpu_len, gpu_len + cpu_len]], device=self, seg_dim=seg_dim)
+        output = self.allocate_all(shape, dtype=gpu_tensor.dtype)
+        input.balanced_copy(output.data[0][0], None, seg_dim=seg_dim)
+        input.balanced_copy(output.data[0][1], None, seg_dim=seg_dim)
+        return output
+
+    # def reduce():
+
     def init_weight_balanced(self, weight_specs, dev_percents, n_head=None):
         weights = []
         
@@ -1214,7 +1196,42 @@ class TorchMixedDevice:
         v_cache = self.allocate(shape, np.float16,
             seg_lengths=lens, pin_memory=pin_memory)
         return k_cache, v_cache
+    def opt_input_embed_balanced(self, inputs, attention_mask, w_token, w_pos, pad_token_id, donate):
+        # decompress weights
+        if w_token.device.device_type == DeviceType.COMPRESSED:
+            w_token = w_token.device.decompress(w_token)
+            w_pos = w_pos.device.decompress(w_pos)
 
+        token_ids = inputs.data
+        mask = attention_mask.data
+        if donate[0]: inputs.delete()
+        if donate[1]: attention_mask.delete()
+
+        # token embedding
+        
+        token_embed_gpu = F.embedding(token_ids, w_token.data[0][0], pad_token_id)
+        token_embed_cpu = F.embedding(token_ids, w_token.data[0][1], pad_token_id)
+        # pos embedding
+        positions = torch.cumsum(mask, dim=1).int() * mask + 1
+
+        # cut positions if `past_key_values_length` is > 0
+        past_key_values_length = mask.shape[1] - token_ids.shape[1]
+        positions = positions[:, past_key_values_length:]
+
+        pos_embed_gpu = F.embedding(positions, w_pos.data[0][0])
+        pos_embed_cpu = F.embedding(positions, w_pos.data[0][1])
+        data_gpu = token_embed_gpu + pos_embed_gpu
+        data_cpu = token_embed_cpu + pos_embed_cpu
+        b, s, gpu_h = data_gpu.shape
+        b, s, cpu_h = data_cpu.shape
+        output = self.gather((b, s, gpu_h + cpu_h), data_gpu, data_cpu, seg_dim=2)
+        return output
+        # output = torch.empty((b, s, gpu_h + cpu_h), )
+        # output = torch.empty((world_size, b, s, dist_h) , device=self.dev, dtype=data.dtype)
+        # dist.all_gather_into_tensor(output, data)
+        # output = output.permute(1, 2, 0, 3).reshape(b, s, -1)
+
+        # return TorchTensor.create_from_torch(output, self)
 class TorchLink:
     """An I/O link between two devices."""
 

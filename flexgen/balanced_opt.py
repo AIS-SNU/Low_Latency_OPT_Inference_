@@ -179,7 +179,7 @@ class InputEmbed:
         # Clear the weight_read_buf if it is the last gpu batch
         (w_token, donate[2]), (w_pos, donate[3]) = weight_read_buf.pop()
 
-        h = self.compute.opt_input_embed_balanced(h, mask,
+        h = self.env.mixed.opt_input_embed_balanced(h, mask,
             w_token, w_pos, self.config.pad_token_id, donate)
         hidden.val = h
         if check_time:
