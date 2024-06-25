@@ -127,8 +127,7 @@ class InputEmbed:
         self.task = task
 
     def init_weight(self, weight_home, path):
-        v, h, s, dtype = (self.config.vocab_size, self.config.input_dim,
-            self.config.max_seq_len, self.config.dtype)
+        v, h, s, dtype = (self.config.vocab_size, self.config.input_dim, self.config.max_seq_len, self.config.dtype)
         path = os.path.join(path, "")
         weight_specs = [
             # w_token
@@ -139,7 +138,6 @@ class InputEmbed:
         dev_percents = [self.policy.InputEmbed_w_gpu_percent, self.policy.InputEmbed_w_cpu_percent, self.policy.InputEmbed_w_disk_percent]
         weights = self.env.mixed.init_weight_balanced(weight_specs, dev_percents)
         weight_home.store(weights)
-
     def load_weight(self, weight_home, weight_read_buf, check_time):
         if check_time:
             timers("InputEmbed_load_weight").start(self.sync)
@@ -148,11 +146,9 @@ class InputEmbed:
         v, h = w_token.shape
         len_gpu = int((h * comp_gpu_percent) / 100)
         len_cpu = h - len_gpu
-        ##compute on gpu or cpu
         seg_lengths = [len_gpu, len_cpu, 0]
-        
-        ## w_token stored in gpu to comp_w_token(gpu)
-        weight_read_buf.store((w_token.balanced_copy(self.env.mixed, seg_lengths, 1), w_pos.balanced_copy(self.env.mixed, seg_lengths, 1)))
+        weight_read_buf.store((
+            w_token.balanced_copy(self.env.mixed, seg_lengths, 1), w_pos.balanced_copy(self.env.mixed, seg_lengths, 1)))
         if check_time:
             timers("InputEmbed_load_weight").stop(self.sync)
     def init_cache_one_gpu_batch(self, cache_home):
@@ -311,11 +307,10 @@ class SelfAttention:
         if check_time:
             timers("SelfAttention_load_weight").start(self.sync)
         w_q, b_q, w_k, b_k, w_v, b_v, w_out, b_out, w_ln, b_ln = weight_home.val
-        dst1 = self.weight_load_dst
-        dst2 = self.compute
         comp_gpu_percent = self.policy.SelfAttention_comp_gpu_percent
         h, = b_q.shape
-        len_gpu = int((h * comp_gpu_percent) / 100)
+        n_head = self.config.n_head
+        len_gpu = int((n_head * comp_gpu_percent) / 100) * h // n_head
         len_cpu = h - len_gpu
         seg_lengths = [len_gpu, len_cpu, 0]
         weight_read_buf.store((
@@ -340,50 +335,26 @@ class SelfAttention:
         cache = device.init_cache_one_gpu_batch(self.config, self.task, self.policy)
         cache_home.store(cache)
     def load_cache(self, cache_home, cache_read_buf, i, check_time):
+
+        ##todo
         if i == 0:  # prefill, no cache
             return
         if check_time:
             timers("SelfAttention_load_cache").start(self.sync)
         # shape: (s, b * n_head, head_dim) ?
         k_home, v_home = cache_home.val
-
-        # Pick code path
-
-        if (k_home.device.device_type == DeviceType.MIXED and
-            k_home.data[0][0] is not None):
-            path = 1
-        else:
-            path = 0
-        dst = self.attention_compute
-        if path == 0:  # Copy to CPU temporary workspace
-            # shape: (s, b * n_head, head_dim)
-            k_buf, v_buf = dst.next_attention_compute_workspace()
-            indices = (slice(0, self.task.prompt_len + i - 1),
-                       slice(0, k_home.shape[1]))
-            general_copy(k_buf, indices, k_home, indices)
-            general_copy(v_buf, indices, v_home, indices)
-            cache_read_buf.store(((k_buf, False), (v_buf, False)))
-        elif path == 1:  # Copy to both GPU and CPU
-            # The caches are stored on both GPU and other devices.
-            # Compute attention on gpu for caches stored on gpu.
-            # Compute attention on cpu for caches stored on cpu/disk.
-            gpu_k_buf = k_home.data[0][0]
-            gpu_v_buf = v_home.data[0][0]
-
-            # shape: (s, b * n_head, head_dim)
-            k_buf, v_buf = dst.next_attention_compute_workspace()
-            indices = (slice(0, self.task.prompt_len + i - 1),
-                       slice(gpu_k_buf.shape[1], k_home.shape[1]))
-            general_copy(k_buf, indices, k_home, indices)
-            general_copy(v_buf, indices, v_home, indices)
-            cache_read_buf.store((((gpu_k_buf, k_buf,), False),
-                                  ((gpu_v_buf, v_buf,), False)))
-            assert self.policy.attn_sparsity >= 1.0
-        else:
-            raise ValueError(f"Invalid path: {path}")
+        # The caches are stored on both GPU and other devices.
+        # Compute attention on gpu for caches stored on gpu.
+        # Compute attention on cpu for caches stored on cpu/disk.
+        len_gpu = int(self.policy.SelfAttention.comp_gpu_percent * k_home.shape[1])
+        len_cpu = k_home.shape[1] - len_gpu
+        seg_lengths = [len_gpu, len_cpu, 0]
+        cache_read_buf.store((k_home.balanced_copy(self.env.mixed, seg_lengths, 1), v_home.balanced_copy(self.env.mixed, seg_lengths, 1)))
+        assert self.policy.attn_sparsity >= 1.0
         if check_time:
             timers("SelfAttention_load_cache").stop(self.sync)
     def store_cache(self, cache_home, cache_write_buf, i, check_time):
+        ##todo
         # shape: (s, b * n_head, head_dim)
         if check_time:
             timers("SelfAttention_store_cache").start(self.sync)
@@ -400,9 +371,8 @@ class SelfAttention:
             pos = self.task.prompt_len + i
             indices = (slice(pos - k_new.shape[0], pos),
                        slice(0, k_new.shape[1]))
-
-        general_copy(k_home, indices, k_new, None)
-        general_copy(v_home, indices, v_new, None)
+        general_copy(k_home, indices, k_new, None, seg_dim=1)
+        general_copy(v_home, indices, v_new, None, seg_dim=1)
         if check_time:
             timers("SelfAttention_store_cache").stop(self.sync)
     def input_act_shape_and_dtype(self, batch_size, seq_len):
@@ -423,14 +393,14 @@ class SelfAttention:
             (w_ln, donate[10]), (b_ln, donate[11])) = weight_read_buf.pop()
 
         if i == 0:  # prefill
-            mask, donate[1] = attention_mask.val.smart_copy(self.compute)
-            h, new_k_cache, new_v_cache = self.compute.mha_balanced(h, mask, w_q, b_q,
+            mask, donate[1] = attention_mask.val.balanced_copy(self.env.mixed, None, None)
+            h, new_k_cache, new_v_cache = self.env.mixed.mha_balanced(h, mask, w_q, b_q,
                 w_k, b_k, w_v, b_v, w_out, b_out, w_ln, b_ln, n_head, donate)
             cache_write_buf.store((new_k_cache, new_v_cache))
         else:  # decoding
-            mask, donate[1] = attention_mask.val.smart_copy(self.attention_compute)
+            mask, donate[1] = attention_mask.val.balanced_copy(self.env.mixed, None, None)
             (k_cache, donate[12]), (v_cache, donate[13]) = cache_read_buf.pop()
-            h, new_k_cache, new_v_cache = self.compute.mha_gen_balanced(h, mask, w_q,
+            h, new_k_cache, new_v_cache = self.env.mha_gen_balanced(h, mask, w_q,
                 b_q, w_k, b_k, w_v, b_v, w_out, b_out, w_ln, b_ln, n_head,
                 k_cache, v_cache, donate)
             cache_write_buf.store((new_k_cache, new_v_cache))
@@ -523,7 +493,7 @@ class MLP:
         ((wi, donate[1]), (bi, donate[2]), (wo, donate[3]), (bo, donate[4]),
             (w_ln, donate[5]), (b_ln, donate[6])) = weight_read_buf.pop()
 
-        h = self.compute.mlp(h, wi, bi, wo, bo, w_ln, b_ln, donate)
+        h = self.env.mixed.mlp_balanced(h, wi, bi, wo, bo, w_ln, b_ln, donate)
         hidden.val = h
         if check_time:
             timers("MLP_comp").stop(self.sync)
@@ -701,22 +671,22 @@ class OptLM:
 
     def load_hidden(self, i):
         # Load to hidden states buffers
-        dst = self.env.gpu
-        # dst = self.env.mixed
+        # dst = self.env.gpu
+        dst = self.env.mixed
         gpu_batch_size = self.policy.gpu_batch_size
         if i == 0:  # load from the input ids
-            val = dst.allocate((gpu_batch_size, self.task.prompt_len), np.int32)
-            val.load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
-            # val = dst.allocate_all((gpu_batch_size, self.task.prompt_len), np.int32)
-            # val.data[0].load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
-            # val.data[1].load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
+            # val = dst.allocate((gpu_batch_size, self.task.prompt_len), np.int32)
+            # val.load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
+            val = dst.allocate_all((gpu_batch_size, self.task.prompt_len), np.int32)
+            val.data[0][0].load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
+            val.data[0][1].load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
         else:  # load from the last generated token
             pos = self.task.prompt_len + i
-            val = dst.allocate((gpu_batch_size, 1), np.int32)
-            val.load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
-            # val = dst.allocate_all((gpu_batch_size, 1), np.int32)
-            # val.data[0].load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
-            # val.data[1].load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
+            # val = dst.allocate((gpu_batch_size, 1), np.int32)
+            # val.load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
+            val = dst.allocate_all((gpu_batch_size, 1), np.int32)
+            val.data[0][0].load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
+            val.data[0][1].load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
         self.hidden.store(val)
 
     def store_hidden(self, i):

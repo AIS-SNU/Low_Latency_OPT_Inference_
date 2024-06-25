@@ -75,12 +75,13 @@ class TorchTensor:
     """
     name_count = count()
 
-    def __init__(self, shape, dtype, data, device, name=None, seg_dim=None):
+    def __init__(self, shape, dtype, data, device, name=None, seg_dim=None, gpu_dtype=None):
         if isinstance(data, torch.Tensor):
             assert data.device == device.dev
 
         self.shape = shape
         self.dtype = dtype
+        self.gpu_dtype = gpu_dtype if gpu_dtype is not None else dtype
         self.data = data
         self.device = device
 
@@ -1020,7 +1021,7 @@ class TorchMixedDevice:
         self.device_type = DeviceType.MIXED
         self.base_devices = base_devices
 
-    def allocate(self, shape, dtype, seg_lengths, pin_memory=None, name=None, seg_dim=1):
+    def allocate(self, shape, dtype, seg_lengths, pin_memory=None, name=None, seg_dim=1, gpu_dtype=None):
         assert sum(seg_lengths) == shape[seg_dim]
         assert len(seg_lengths) == len(self.base_devices)
         seg_points = [0]
@@ -1034,9 +1035,14 @@ class TorchMixedDevice:
             if seg_len == 0:
                 tensors.append(None)
             else:
+                
                 seg_shape = shape[:seg_dim] + (seg_len,) + shape[seg_dim+1:]
-                tensors.append(devices[i].allocate(seg_shape, dtype,
-                    pin_memory=pin_memory))
+                if i == 0 and gpu_dtype is not None:
+                    tensors.append(devices[i].allocate(seg_shape, gpu_dtype,
+                        pin_memory=pin_memory))
+                else:
+                    tensors.append(devices[i].allocate(seg_shape, dtype,
+                        pin_memory=pin_memory))
 
         return TorchTensor(shape, np_dtype_to_torch_dtype[dtype],
                         (tensors, seg_points), self, name=name)
@@ -1093,15 +1099,26 @@ class TorchMixedDevice:
             seg_lengths=lens, pin_memory=pin_memory)
         return k_cache, v_cache
     def gather(self, shape, gpu_tensor, cpu_tensor, seg_dim):
-        gpu_len = gpu_tensor.shape[seg_dim]
-        cpu_len = gpu_tensor.shape[seg_dim]
-        input = TorchTensor(shape, dtype=gpu_tensor.dtype, data=[[gpu_tensor, cpu_tensor, None], [0, gpu_len, gpu_len + cpu_len, gpu_len + cpu_len]], device=self, seg_dim=seg_dim)
-        output = self.allocate_all(shape, dtype=gpu_tensor.dtype)
-        input.balanced_copy(output.data[0][0], None, seg_dim=seg_dim)
-        input.balanced_copy(output.data[0][1], None, seg_dim=seg_dim)
+        gpu_indices = tuple(slice(0, x) for x in gpu_tensor.shape)
+        cpu_indices = tuple(slice(0, x) for x in cpu_tensor.shape)
+        seg = cpu_indices[seg_dim]
+        cpu_offset = gpu_tensor.shape[seg_dim]
+        cpu_indices = (cpu_indices[:seg_dim] + (slice(seg.start + cpu_offset, seg.stop + cpu_offset),) + cpu_indices[seg_dim + 1:])
+
+        # input = TorchTensor(shape, dtype=gpu_tensor.dtype, data=[[gpu_tensor, cpu_tensor, None], [0, gpu_len, gpu_len + cpu_len, gpu_len + cpu_len]], device=self, seg_dim=seg_dim)
+        output = self.allocate_all(shape, dtype=torch_dtype_to_np_dtype[gpu_tensor.dtype])
+        output.data[0][0].data[gpu_indices].copy_(gpu_tensor, non_blocking=True)
+        output.data[0][0].data[cpu_indices].copy_(cpu_tensor, non_blocking=True)
+        output.data[0][1].data[gpu_indices].copy_(gpu_tensor, non_blocking=True)
+        output.data[0][1].data[cpu_indices].copy_(cpu_tensor, non_blocking=True)
         return output
 
-    # def reduce():
+    def reduce(self, gpu_tensor, cpu_tensor):
+        cpu_tensor_to_gpu = cpu_tensor.to(self.base_devices[0].dev)
+        gpu_tensor_to_cpu = gpu_tensor.to(self.base_devices[1].dev)
+        gpu_tensor += cpu_tensor_to_gpu
+        cpu_tensor += gpu_tensor_to_cpu
+        return TorchTensor(gpu_tensor.shape, dtype=cpu_tensor.dtype, data=[[gpu_tensor, cpu_tensor, None], None], device=self, seg_dim=None, gpu_dtype=gpu_tensor.dtype)
 
     def init_weight_balanced(self, weight_specs, dev_percents, n_head=None):
         weights = []
@@ -1166,10 +1183,10 @@ class TorchMixedDevice:
         lens = [len_gpu, len_cpu, len_disk]
 
         pin_memory = False
-        k_cache = self.allocate(shape, np.float16,
-            seg_lengths=lens, pin_memory=pin_memory)
-        v_cache = self.allocate(shape, np.float16,
-            seg_lengths=lens, pin_memory=pin_memory)
+        k_cache = self.allocate(shape, np.float32,
+            seg_lengths=lens, pin_memory=pin_memory, gpu_dtype=np.float16)
+        v_cache = self.allocate(shape, np.float32,
+            seg_lengths=lens, pin_memory=pin_memory, gpu_dtype=np.float16)
         return k_cache, v_cache
     def init_cache_one_gpu_batch_dist(self, config, task, policy, world_size, seg_dim=1):
         raise NotImplementedError
@@ -1209,29 +1226,178 @@ class TorchMixedDevice:
 
         # token embedding
         
-        token_embed_gpu = F.embedding(token_ids, w_token.data[0][0], pad_token_id)
-        token_embed_cpu = F.embedding(token_ids, w_token.data[0][1], pad_token_id)
+        token_embed_gpu = F.embedding(token_ids[0][0].data, w_token.data[0][0].data, pad_token_id)
+        token_embed_cpu = F.embedding(token_ids[0][1].data, w_token.data[0][1].data, pad_token_id)
         # pos embedding
-        positions = torch.cumsum(mask, dim=1).int() * mask + 1
+        positions_gpu = torch.cumsum(mask[0][0].data, dim=1).int() * mask[0][0].data + 1
+        positions_cpu = torch.cumsum(mask[0][1].data, dim=1).int() * mask[0][1].data + 1
 
         # cut positions if `past_key_values_length` is > 0
-        past_key_values_length = mask.shape[1] - token_ids.shape[1]
-        positions = positions[:, past_key_values_length:]
+        past_key_values_length_gpu = mask[0][0].data.shape[1] - token_ids[0][0].data.shape[1]
+        past_key_values_length_cpu = mask[0][1].data.shape[1] - token_ids[0][1].data.shape[1]
+        positions_gpu = positions_gpu[:, past_key_values_length_gpu:]
+        positions_cpu = positions_cpu[:, past_key_values_length_cpu:]
 
-        pos_embed_gpu = F.embedding(positions, w_pos.data[0][0])
-        pos_embed_cpu = F.embedding(positions, w_pos.data[0][1])
+        pos_embed_gpu = F.embedding(positions_gpu, w_pos.data[0][0].data)
+        pos_embed_cpu = F.embedding(positions_cpu, w_pos.data[0][1].data)
         data_gpu = token_embed_gpu + pos_embed_gpu
         data_cpu = token_embed_cpu + pos_embed_cpu
         b, s, gpu_h = data_gpu.shape
         b, s, cpu_h = data_cpu.shape
         output = self.gather((b, s, gpu_h + cpu_h), data_gpu, data_cpu, seg_dim=2)
         return output
-        # output = torch.empty((b, s, gpu_h + cpu_h), )
-        # output = torch.empty((world_size, b, s, dist_h) , device=self.dev, dtype=data.dtype)
-        # dist.all_gather_into_tensor(output, data)
-        # output = output.permute(1, 2, 0, 3).reshape(b, s, -1)
+    def mha_balanced(self, inputs, attention_mask, w_q, b_q, w_k, b_k, w_v, b_v,
+            w_out, b_out, w_ln, b_ln, n_head, donate):
+        """Multi-head attention (prefill phase)."""
+        # decompress weights
+        if w_q.device.device_type == DeviceType.COMPRESSED:
+            w_q = w_q.device.decompress(w_q)
+            w_k = w_k.device.decompress(w_k)
+            w_v = w_v.device.decompress(w_v)
+            w_out = w_out.device.decompress(w_out)
+        
+        b, s, h = inputs.shape
+        head_dim = h // n_head
+        scaling = head_dim ** -0.5
 
-        # return TorchTensor.create_from_torch(output, self)
+        hidden_gpu = F.layer_norm(inputs.data[0][0].data, (h,), weight=w_ln.data[0][0].data, bias=b_ln.data[0][0].data)
+        hidden_cpu = F.layer_norm(inputs.data[0][1].data.float(), (h,), weight=w_ln.data[0][1].data.float(), bias=b_ln.data[0][1].data.float())
+        # w_ shape: (h // world_size, h)
+        # b_ shape: (h // world_size,)
+        # q, k, v shape: (b, s, h // world_size)
+        q_gpu = F.linear(hidden_gpu, w_q.data[0][0].data, bias=b_q.data[0][0].data) * scaling
+        k_gpu = F.linear(hidden_gpu, w_k.data[0][0].data, bias=b_k.data[0][0].data)
+        v_gpu = F.linear(hidden_gpu, w_v.data[0][0].data, bias=b_v.data[0][0].data)
+
+        q_cpu = F.linear(hidden_cpu, w_q.data[0][1].data.float(), bias=b_q.data[0][1].data.float()) * scaling
+        k_cpu = F.linear(hidden_cpu, w_k.data[0][1].data.float(), bias=b_k.data[0][1].data.float())
+        v_cpu = F.linear(hidden_cpu, w_v.data[0][1].data.float(), bias=b_v.data[0][1].data.float())
+        
+        # shape: (b, s, n_head // world_size, head_dim)
+        q_gpu = q_gpu.view(b, s, -1, head_dim)
+        k_gpu = k_gpu.view(b, s, -1, head_dim)
+        v_gpu = v_gpu.view(b, s, -1, head_dim)
+
+        q_cpu = q_cpu.view(b, s, -1, head_dim)
+        k_cpu = k_cpu.view(b, s, -1, head_dim)
+        v_cpu = v_cpu.view(b, s, -1, head_dim)
+
+        # shape: (b * n_head // world_size, s, head_dim)
+        q_gpu = q_gpu.permute(0, 2, 1, 3).reshape(-1, s, head_dim)
+        # shape: (b * n_head // world_size, head_dim, s)
+        k_gpu = k_gpu.permute(0, 2, 3, 1).reshape(-1, head_dim, s)
+        # shape: (b * n_head // world_size, s, head_dim)
+        v_gpu = v_gpu.permute(0, 2, 1, 3).reshape(-1, s, head_dim)
+
+        # shape: (b * n_head // world_size, s, head_dim)
+        q_cpu = q_cpu.permute(0, 2, 1, 3).reshape(-1, s, head_dim)
+        # shape: (b * n_head // world_size, head_dim, s)
+        k_cpu = k_cpu.permute(0, 2, 3, 1).reshape(-1, head_dim, s)
+        # shape: (b * n_head // world_size, s, head_dim)
+        v_cpu = v_cpu.permute(0, 2, 1, 3).reshape(-1, s, head_dim)
+
+        # shape: (b * n_head // world_size, s, s)
+        attn_weights_gpu = torch.bmm(q_gpu, k_gpu)
+
+        # shape: (b * n_head // world_size, s, s)
+        attn_weights_cpu = torch.bmm(q_cpu, k_cpu)
+
+        # shape: (b, 1, s, s)
+        idx_gpu = torch.arange(s, device=self.base_devices[0].dev)
+        causal_mask_gpu = (idx_gpu <= idx_gpu.view(s, 1)).view(1, 1, s, s)
+        mask_gpu = attention_mask.data[0][0].data.view(b, 1, 1, s) & causal_mask_gpu
+
+        # shape: (b, 1, s, s)
+        idx_cpu = torch.arange(s, device=self.base_devices[1].dev)
+        causal_mask_cpu = (idx_cpu <= idx_cpu.view(s, 1)).view(1, 1, s, s)
+        mask_cpu = attention_mask.data[0][1].data.view(b, 1, 1, s) & causal_mask_cpu
+
+        # shape: (b, n_head // world_size, s, s)
+        attn_weights_gpu = attn_weights_gpu.view(b, -1, s, s)
+        attn_weights_gpu = torch.where(mask_gpu, attn_weights_gpu, -1e4)
+        # shape: (b * n_head // world_size, s, s)
+        attn_weights_gpu = attn_weights_gpu.view(-1, s, s)
+        attn_weights_gpu = F.softmax(attn_weights_gpu, dim=2)
+        # shape: (b, n_head // world_size, s, head_dim)
+        value_gpu = torch.bmm(attn_weights_gpu, v_gpu).view(b, -1, s, head_dim)
+        # shape: (b, s, h // world_size)
+        value_gpu = value_gpu.transpose(1, 2).reshape(b, s, -1)
+        # w_out shape: (h, h // world_size)
+        # b_out shape: (h,)
+
+        # shape: (b, n_head // world_size, s, s)
+        attn_weights_cpu = attn_weights_cpu.view(b, -1, s, s)
+        attn_weights_cpu = torch.where(mask_cpu, attn_weights_cpu, -1e4)
+        # shape: (b * n_head // world_size, s, s)
+        attn_weights_cpu = attn_weights_cpu.view(-1, s, s)
+        attn_weights_cpu = F.softmax(attn_weights_cpu, dim=2)
+        # shape: (b, n_head // world_size, s, head_dim)
+        value_cpu = torch.bmm(attn_weights_cpu, v_cpu).view(b, -1, s, head_dim)
+        # shape: (b, s, h // world_size)
+        value_cpu = value_cpu.transpose(1, 2).reshape(b, s, -1)
+        # w_out shape: (h, h // world_size)
+        # b_out shape: (h,)
+
+        value_gpu = F.linear(value_gpu, w_out.data[0][0].data, bias=b_out.data[0][0].data)
+        value_gpu.add_(inputs.data[0][0].data)
+
+        value_cpu = F.linear(value_cpu, w_out.data[0][1].data.float())
+        
+        value = self.reduce(value_gpu, value_cpu)
+        # dist.all_reduce(value)
+        # value shape: (b, s, h)
+
+        if donate[0]: inputs.delete()
+        if donate[1]: attention_mask.delete()
+
+        # shape: (s, b * n_head // world_size, head_dim)
+        k_gpu = k_gpu.permute(2, 0, 1)
+        v_gpu = v_gpu.permute(1, 0, 2)
+
+        # shape: (s, b * n_head // world_size, head_dim)
+        k_cpu = k_cpu.permute(2, 0, 1)
+        v_cpu = v_cpu.permute(1, 0, 2)
+
+        k_gpu = TorchTensor.create_from_torch(k_gpu, self.base_devices[0])
+        v_gpu = TorchTensor.create_from_torch(v_gpu, self.base_devices[0])
+        k_cpu = TorchTensor.create_from_torch(k_cpu, self.base_devices[1])
+        v_cpu = TorchTensor.create_from_torch(v_cpu, self.base_devices[1])
+        
+        lens = [0, k_gpu.data.shape[1], k_gpu.data.shape[1] + k_cpu.data.shape[1], k_gpu.data.shape[1] + k_cpu.data.shape[1]]
+        k = TorchTensor((s, b * n_head, head_dim), dtype=k_cpu.dtype, data=[[k_gpu, k_cpu, None], lens], device=self, seg_dim=1, gpu_dtype=k_gpu.dtype)
+        v = TorchTensor((s, b * n_head, head_dim), dtype=v_cpu.dtype, data=[[v_gpu, v_cpu, None], lens], device=self, seg_dim=1, gpu_dtype=v_gpu.dtype)
+        # shape: (b, s, h), (s, b * n_head // world_size, head_dim), (s, b * n_head // world_size, head_dim)
+        return value, k, v
+    def mlp_balanced(self, inputs, wi, bi, wo, bo, w_ln, b_ln, donate):
+        # decompress weights
+        if wi.device.device_type == DeviceType.COMPRESSED:
+            wi = wi.device.decompress(wi)
+            wo = wo.device.decompress(wo)
+
+        b, s, h = inputs.shape
+        # wi shape: (4*h // world_size, h)
+        # bi shape: (4*h // world_Size,)
+
+        out_gpu = F.layer_norm(inputs.data[0][0].data, (h,), weight=w_ln.data[0][0].data, bias=b_ln.data[0][0].data)
+        out_cpu = F.layer_norm(inputs.data[0][1].data.float(), (h,), weight=w_ln.data[0][1].data.float(), bias=b_ln.data[0][1].data.float())
+        
+        out_gpu = F.linear(out_gpu, wi.data[0][0].data, bias=bi.data[0][0].data)
+        out_cpu = F.linear(out_cpu, wi.data[0][1].data.float(), bias=bi.data[0][1].data.float())
+
+        # out shape: (b, s, 4*h // world_size)
+        F.relu(out_gpu, inplace=True)
+        F.relu(out_cpu, inplace=True)
+        # wo shape: (h, 4*h // world_size)
+        # bo shape: (h, )
+        out_gpu = F.linear(out_gpu, wo.data[0][0].data, bias=bo.data[0][0].data)
+        out_gpu.add_(inputs.data[0][0].data)
+        out_cpu = F.linear(out_cpu, wo.data[0][1].data.float())
+        out = self.reduce(out_gpu, out_cpu)
+        
+        # out shape: (b, s, h)
+        if donate[0]: inputs.delete()
+        # return TorchTensor.create_from_torch(out, self)
+        return out
 class TorchLink:
     """An I/O link between two devices."""
 
