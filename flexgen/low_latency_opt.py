@@ -1124,7 +1124,7 @@ if __name__ == "__main__":
     
     # args.cpu_cache_compute=True
     # args = argparse.Namespace(model='facebook/opt-66b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=1, percent=[0, 100, 0, 100], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
-    args = argparse.Namespace(model='facebook/opt-1.3b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=10, cache_percent=[50, 50], per_layer_percent=[30, 30, 30, 30, 30, 30, 30, 30], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
+    # args = argparse.Namespace(model='facebook/opt-1.3b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=10, cache_percent=[50, 50], per_layer_percent=[30, 30, 30, 30, 30, 30, 30, 30], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
     print(args)
     assert len(args.per_layer_percent) == 8
     assert len(args.cache_percent) == 2
