@@ -141,17 +141,17 @@ class TorchTensor:
         return ret
     def balanced_copy(self, dst, dst_seg_lengths, seg_dim, cpu_dtype=None):
         cpu_dtype = cpu_dtype if cpu_dtype else np.float32
-        if self.data[1] == dst_seg_lengths:
-            return self, False
+        if isinstance(self.data, tuple):
+            if self.data[1] == dst_seg_lengths:
+                return self, False
+        if seg_dim == None:
+            ret = dst.allocate_all(self.shape, torch_dtype_to_np_dtype[self.dtype], cpu_dtype)
+            general_copy(ret, None, self, None, seg_dim)
+            return ret, True
         else:
-            if seg_dim == None:
-                ret = dst.allocate_all(self.shape, torch_dtype_to_np_dtype[self.dtype], cpu_dtype)
-                general_copy(ret, None, self, None, seg_dim)
-                return ret, True
-            else:
-                ret = dst.allocate(self.shape, torch_dtype_to_np_dtype[self.dtype], dst_seg_lengths, seg_dim=seg_dim)
-                general_copy(ret, None, self, None, seg_dim)
-                return ret, True
+            ret = dst.allocate(self.shape, torch_dtype_to_np_dtype[self.dtype], dst_seg_lengths, seg_dim=seg_dim)
+            general_copy(ret, None, self, None, seg_dim)
+            return ret, True
     def smart_copy(self, dst, src_indices=None):
         if self.device == dst:
             return self, False
