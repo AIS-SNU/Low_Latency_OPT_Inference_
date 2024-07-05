@@ -822,7 +822,7 @@ def run_flexgen(args):
     prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
 
     # Task and policy
-    # warmup_inputs = get_test_inputs(512, num_prompts, tokenizer)
+    warmup_inputs = get_test_inputs(512, num_prompts, tokenizer)
     inputs = get_test_inputs(prompt_len, num_prompts, tokenizer)
 
     gpu = TorchDevice("cuda:0")
@@ -852,38 +852,38 @@ def run_flexgen(args):
     model = OptLM(opt_config, env, args.path, policy)
 
     try:
-        # print("warmup - generate")
+        print("warmup - generate")
         
-        # output_ids = model.generate(
-        #     warmup_inputs, max_new_tokens=2, verbose=args.verbose, check_time=True)
-        # InputEmbed_load_weight = timers("InputEmbed_load_weight").costs
-        # InputEmbed_comp = timers("InputEmbed_comp").costs
-        # OutputEmbed_load_weight = timers("OutputEmbed_load_weight").costs
-        # OutputEmbed_comp = timers("OutputEmbed_comp").costs
-        # SelfAttention_load_weight = timers("SelfAttention_load_weight").costs
-        # SelfAttention_load_cache = timers("SelfAttention_load_cache").costs
-        # SelfAttention_store_cache = timers("SelfAttention_store_cache").costs
-        # SelfAttention_comp = timers("SelfAttention_comp").costs
-        # MLP_load_weight = timers("MLP_load_weight").costs
-        # MLP_comp = timers("MLP_comp").costs
-        # print('InputEmbed')
-        # print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
-        # print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
-        # print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
+        output_ids = model.generate(
+            warmup_inputs, max_new_tokens=2, verbose=args.verbose, check_time=True)
+        InputEmbed_load_weight = timers("InputEmbed_load_weight").costs
+        InputEmbed_comp = timers("InputEmbed_comp").costs
+        OutputEmbed_load_weight = timers("OutputEmbed_load_weight").costs
+        OutputEmbed_comp = timers("OutputEmbed_comp").costs
+        SelfAttention_load_weight = timers("SelfAttention_load_weight").costs
+        SelfAttention_load_cache = timers("SelfAttention_load_cache").costs
+        SelfAttention_store_cache = timers("SelfAttention_store_cache").costs
+        SelfAttention_comp = timers("SelfAttention_comp").costs
+        MLP_load_weight = timers("MLP_load_weight").costs
+        MLP_comp = timers("MLP_comp").costs
+        print('InputEmbed')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
+        print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
 
-        # print('SelfAttention')
-        # print('MLP load weight', str(np.mean(MLP_load_weight)))
-        # print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
+        print('SelfAttention')
+        print('MLP load weight', str(np.mean(MLP_load_weight)))
+        print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
 
-        # print('MLP')
-        # print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
-        # print('MLP comp', str(np.mean(MLP_comp[1:])))
-        # print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
-        # print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
+        print('MLP')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('MLP comp', str(np.mean(MLP_comp[1:])))
+        print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
+        print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
 
-        # print('OutputEmbed')
-        # print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
-        # print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
+        print('OutputEmbed')
+        print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
+        print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
 
         print("benchmark - generate")
         timers("generate").reset()
@@ -950,7 +950,7 @@ def add_parser_arguments(parser):
         help="Cut generation length for fast debugging.")
     parser.add_argument("--debug-mode", type=str,
         choices=["fewer_batch", "breakdown"])
-    parser.add_argument("--gpu-batch-size", type=int, default=10)
+    parser.add_argument("--gpu-batch-size", type=int, default=1)
     parser.add_argument("--cache-percent", nargs="+", type=int,
         default=[80, 20],
         help="two numbers. They are "
@@ -978,12 +978,6 @@ def add_parser_arguments(parser):
         const=True, default=True)
     parser.add_argument("--pin-weight", type=str2bool, nargs="?",
         const=True, default=True)
-    # parser.add_argument("--cpu-cache-compute", action="store_true")
-    # parser.add_argument("--attn-sparsity", type=float, default=1.0)
-    # parser.add_argument("--compress-weight", action="store_true",
-    #     help="Whether to compress weight.")
-    # parser.add_argument("--compress-cache", action="store_true",
-    #     help="Whether to compress cache.")
 
 
     parser.add_argument("--log-file", type=str, default="auto")

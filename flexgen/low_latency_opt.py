@@ -46,8 +46,6 @@ class Policy:
 
     cache_gpu_percent: float
     cache_cpu_percent: float
-    # w_gpu_percent: float
-    # w_cpu_percent: float
     
 
     # Whether to overlap the I/O and compute
@@ -84,10 +82,6 @@ class Policy:
     @property
     def MLP_w_disk_percent(self):
         return 100 - self.MLP_w_gpu_percent - self.MLP_w_cpu_percent
-    # @property
-    # def w_disk_percent(self):
-    #     return 100 - self.w_gpu_percent - self.w_cpu_percent
-
     @property
     def cache_disk_percent(self):
         return 100 - self.cache_gpu_percent - self.cache_cpu_percent
@@ -104,8 +98,6 @@ def get_choice(cur_percent, percents, choices):
 
 
 def init_weight_list(dev_percents, weight_specs, policy, env):
-
-    # print(f"{layer} percent: {dev_percents}")
     dev_choices = [env.disk, env.cpu, env.gpu]
 
     sizes = [np.prod(spec[0]) for spec in weight_specs]
@@ -130,7 +122,6 @@ def init_weight_list(dev_percents, weight_specs, policy, env):
                 weight.load_from_np_file(weight_specs[i][2])
             else:
                 weight.load_from_np(np.ones(shape, dtype))
-                #weight.load_from_np(np.random.rand(*shape).astype(dtype))
         else:
             weight = home.compressed_device.allocate(
                 shape, dtype, policy.comp_weight_config, pin_memory=pin_memory)
@@ -337,8 +328,6 @@ class SelfAttention:
         dev_percents = [self.policy.SelfAttention_w_disk_percent, self.policy.SelfAttention_w_cpu_percent, self.policy.SelfAttention_w_gpu_percent]
         weights = init_weight_list(dev_percents, weight_specs, self.policy, self.env)
         weight_home.store(weights)
-
-        # print(f'selfattention first data {weights[0].data[0][0]}')
     def load_weight(self, weight_home, weight_read_buf, check_time=False):
         if check_time:
             timers("SelfAttention_load_weight").start(self.sync)
@@ -461,10 +450,6 @@ class SelfAttention:
             pos = self.task.prompt_len + i
             indices = (slice(pos - k_new.shape[0], pos),
                        slice(0, k_new.shape[1]))
-        ## k_home.data[0][0]: (513, 96, 64)
-        ## k_home.data[0][1]: (513, 32, 64)
-        ## k_home.data[0][2]: None
-        ## k_new.data: (512, 128, 64)
         general_copy(k_home, indices, k_new, None, seg_dim=1)
         general_copy(v_home, indices, v_new, None, seg_dim=1)
         if check_time:
@@ -502,7 +487,6 @@ class SelfAttention:
                 self.policy.compress_cache, self.policy.comp_cache_config)
             cache_write_buf.store((new_k_cache, new_v_cache))
         hidden.val = h
-        # print(h.data)
         if check_time:
             timers("SelfAttention_comp").stop(self.sync)
 class MLP:
@@ -544,7 +528,6 @@ class MLP:
         dev_percents = [self.policy.MLP_w_disk_percent, self.policy.MLP_w_cpu_percent, self.policy.MLP_w_gpu_percent]
         weights = init_weight_list(dev_percents, weight_specs, self.policy, self.env)
         weight_home.store(weights)
-        # print(f'mlp first data {weights[0].data[0][0]}')
     def load_weight(self, weight_home, weight_read_buf, check_time=False):
         if check_time:
             timers("MLP_load_weight").start(self.sync)
@@ -801,7 +784,6 @@ class OptLM:
         self.weight_home = array_1d(self.num_layers, ValueHolder)
         for j in range(self.num_layers):
             self.init_weight(j)
-            # print(f'{j} th layer, weight len {len(self.weight_home[j].val)}')
 
     def delete_all_weights(self):
         for j in range(self.num_layers):
@@ -982,38 +964,38 @@ def run_flexgen(args):
     model = OptLM(opt_config, env, args.path, policy)
 
     try:
-        # print("warmup - generate")
+        print("warmup - generate")
         
-        # output_ids = model.generate(
-            # warmup_inputs, max_new_tokens=2, verbose=args.verbose, check_time=True)
-        # InputEmbed_load_weight = timers("InputEmbed_load_weight").costs
-        # InputEmbed_comp = timers("InputEmbed_comp").costs
-        # OutputEmbed_load_weight = timers("OutputEmbed_load_weight").costs
-        # OutputEmbed_comp = timers("OutputEmbed_comp").costs
-        # SelfAttention_load_weight = timers("SelfAttention_load_weight").costs
-        # SelfAttention_load_cache = timers("SelfAttention_load_cache").costs
-        # SelfAttention_store_cache = timers("SelfAttention_store_cache").costs
-        # SelfAttention_comp = timers("SelfAttention_comp").costs
-        # MLP_load_weight = timers("MLP_load_weight").costs
-        # MLP_comp = timers("MLP_comp").costs
-        # print('InputEmbed')
-        # print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
-        # print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
-        # print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
+        output_ids = model.generate(
+            warmup_inputs, max_new_tokens=2, verbose=args.verbose, check_time=True)
+        InputEmbed_load_weight = timers("InputEmbed_load_weight").costs
+        InputEmbed_comp = timers("InputEmbed_comp").costs
+        OutputEmbed_load_weight = timers("OutputEmbed_load_weight").costs
+        OutputEmbed_comp = timers("OutputEmbed_comp").costs
+        SelfAttention_load_weight = timers("SelfAttention_load_weight").costs
+        SelfAttention_load_cache = timers("SelfAttention_load_cache").costs
+        SelfAttention_store_cache = timers("SelfAttention_store_cache").costs
+        SelfAttention_comp = timers("SelfAttention_comp").costs
+        MLP_load_weight = timers("MLP_load_weight").costs
+        MLP_comp = timers("MLP_comp").costs
+        print('InputEmbed')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
+        print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
 
-        # print('SelfAttention')
-        # print('MLP load weight', str(np.mean(MLP_load_weight)))
-        # print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
+        print('SelfAttention')
+        print('MLP load weight', str(np.mean(MLP_load_weight)))
+        print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
 
-        # print('MLP')
-        # print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
-        # print('MLP comp', str(np.mean(MLP_comp[1:])))
-        # print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
-        # print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
+        print('MLP')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('MLP comp', str(np.mean(MLP_comp[1:])))
+        print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
+        print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
 
-        # print('OutputEmbed')
-        # print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
-        # print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
+        print('OutputEmbed')
+        print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
+        print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
 
         print("benchmark - generate")
         timers("generate").reset()
@@ -1122,9 +1104,6 @@ if __name__ == "__main__":
     add_parser_arguments(parser)
     args = parser.parse_args()
     
-    # args.cpu_cache_compute=True
-    # args = argparse.Namespace(model='facebook/opt-66b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=1, percent=[0, 100, 0, 100], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
-    # args = argparse.Namespace(model='facebook/opt-1.3b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=10, cache_percent=[50, 50], per_layer_percent=[30, 30, 30, 30, 30, 30, 30, 30], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
     print(args)
     assert len(args.per_layer_percent) == 8
     assert len(args.cache_percent) == 2
