@@ -51,9 +51,6 @@ class Policy:
 
     cache_gpu_percent: float
     cache_cpu_percent: float
-    # w_gpu_percent: float
-    # w_cpu_percent: float
-    
 
     # Whether to overlap the I/O and compute
     overlap: bool
@@ -64,19 +61,6 @@ class Policy:
     # Whether to use pinned memory for weights on CPU
     pin_weight: bool
     compress_cache = False
-    # Whether to compute attention on CPU
-    # cpu_cache_compute: bool
-
-    # Sparsity of attention weights
-    # attn_sparsity: float
-
-    # Compress weights with group-wise quantization
-    # compress_weight: bool
-    # comp_weight_config: CompressionConfig
-
-    # Compress KV cache with group-wise quantization
-    # compress_cache: bool
-    # comp_cache_config: CompressionConfig
     @property
     def InputEmbed_w_disk_percent(self):
         return 100 - self.InputEmbed_w_gpu_percent - self.InputEmbed_w_cpu_percent
@@ -89,9 +73,6 @@ class Policy:
     @property
     def MLP_w_disk_percent(self):
         return 100 - self.MLP_w_gpu_percent - self.MLP_w_cpu_percent
-    # @property
-    # def w_disk_percent(self):
-    #     return 100 - self.w_gpu_percent - self.w_cpu_percent
     @property
     def InputEmbed_comp_cpu_percent(self):
         return 100 - self.InputEmbed_comp_gpu_percent
@@ -114,9 +95,6 @@ class InputEmbed:
         self.config = config
         self.env = env
         self.policy = policy
-        # self.compute = self.env.gpu
-        # self.weight_load_dst = self.compute
-
         self.task = None
 
     def sync(self):
@@ -170,8 +148,7 @@ class InputEmbed:
             timers("InputEmbed_comp").start(self.sync)
         donate = [False] * 4
         h, donate[0] = hidden.val, True
-        mask, donate[1] = attention_mask.val.balanced_copy(self.env.mixed, None, None)
-        # mask, donate[1] = attention_mask.val.smart_copy(self.compute)
+        mask, donate[1] = attention_mask.val.balanced_copy(self.env.mixed, None, None, bool)
         # Clear the weight_read_buf if it is the last gpu batch
         (w_token, donate[2]), (w_pos, donate[3]) = weight_read_buf.pop()
 
@@ -210,7 +187,6 @@ class OutputEmbed:
             # w_token
             ((v, h), dtype, path + "decoder.embed_tokens.weight", 0),
         ]
-        # weights = init_weight_list_balanced(weight_specs, self.policy, self.env, 'OutputEmbed')
         dev_percents = [self.policy.OutputEmbed_w_gpu_percent, self.policy.OutputEmbed_w_cpu_percent, self.policy.OutputEmbed_w_disk_percent]
         weights = self.env.mixed.init_weight_balanced(weight_specs, dev_percents)
         weight_home.store(weights)
@@ -251,7 +227,7 @@ class OutputEmbed:
         # Clear the weight_read_buf if it is the last gpu batch
         (w_ln, donate[1]), (b_ln, donate[2]), (w_token, donate[3]) = weight_read_buf.pop()
 
-        h = self.compute.opt_output_embed(h, w_ln, b_ln, w_token, donate,
+        h = self.env.mixed.opt_output_embed_balanced(h, w_ln, b_ln, w_token, donate,
             self.task.do_sample, self.task.temperature)
         hidden.val = h
         if check_time:
@@ -332,7 +308,7 @@ class SelfAttention:
         else:
             device = self.env.mixed
 
-        cache = device.init_cache_one_gpu_batch(self.config, self.task, self.policy)
+        cache = device.init_cache_one_gpu_batch_balanced(self.config, self.task, self.policy)
         cache_home.store(cache)
     def load_cache(self, cache_home, cache_read_buf, i, check_time):
 
@@ -346,11 +322,11 @@ class SelfAttention:
         # The caches are stored on both GPU and other devices.
         # Compute attention on gpu for caches stored on gpu.
         # Compute attention on cpu for caches stored on cpu/disk.
-        len_gpu = int(self.policy.SelfAttention.comp_gpu_percent * k_home.shape[1])
+        batch_size = self.policy.gpu_batch_size
+        len_gpu = int(self.policy.SelfAttention_comp_gpu_percent * k_home.shape[1] / 100 / batch_size) * batch_size
         len_cpu = k_home.shape[1] - len_gpu
         seg_lengths = [len_gpu, len_cpu, 0]
         cache_read_buf.store((k_home.balanced_copy(self.env.mixed, seg_lengths, 1), v_home.balanced_copy(self.env.mixed, seg_lengths, 1)))
-        assert self.policy.attn_sparsity >= 1.0
         if check_time:
             timers("SelfAttention_load_cache").stop(self.sync)
     def store_cache(self, cache_home, cache_write_buf, i, check_time):
@@ -371,6 +347,8 @@ class SelfAttention:
             pos = self.task.prompt_len + i
             indices = (slice(pos - k_new.shape[0], pos),
                        slice(0, k_new.shape[1]))
+        if k_new.data[1] == None:
+            print("!!!!!")
         general_copy(k_home, indices, k_new, None, seg_dim=1)
         general_copy(v_home, indices, v_new, None, seg_dim=1)
         if check_time:
@@ -393,19 +371,18 @@ class SelfAttention:
             (w_ln, donate[10]), (b_ln, donate[11])) = weight_read_buf.pop()
 
         if i == 0:  # prefill
-            mask, donate[1] = attention_mask.val.balanced_copy(self.env.mixed, None, None)
+            mask, donate[1] = attention_mask.val.balanced_copy(self.env.mixed, None, None, bool)
             h, new_k_cache, new_v_cache = self.env.mixed.mha_balanced(h, mask, w_q, b_q,
                 w_k, b_k, w_v, b_v, w_out, b_out, w_ln, b_ln, n_head, donate)
             cache_write_buf.store((new_k_cache, new_v_cache))
         else:  # decoding
-            mask, donate[1] = attention_mask.val.balanced_copy(self.env.mixed, None, None)
+            mask, donate[1] = attention_mask.val.balanced_copy(self.env.mixed, None, None, bool)
             (k_cache, donate[12]), (v_cache, donate[13]) = cache_read_buf.pop()
-            h, new_k_cache, new_v_cache = self.env.mha_gen_balanced(h, mask, w_q,
+            h, new_k_cache, new_v_cache = self.env.mixed.mha_gen_balanced(h, mask, w_q,
                 b_q, w_k, b_k, w_v, b_v, w_out, b_out, w_ln, b_ln, n_head,
                 k_cache, v_cache, donate)
             cache_write_buf.store((new_k_cache, new_v_cache))
         hidden.val = h
-        # print(h.data)
         if check_time:
             timers("SelfAttention_comp").stop(self.sync)
 class MLP:
@@ -446,7 +423,6 @@ class MLP:
         dev_percents = [self.policy.MLP_w_gpu_percent, self.policy.MLP_w_cpu_percent, self.policy.MLP_w_disk_percent]
         weights = self.env.mixed.init_weight_balanced(weight_specs, dev_percents)
         weight_home.store(weights)
-        # print(f'mlp first data {weights[0].data[0][0]}')
     def load_weight(self, weight_home, weight_read_buf, check_time):
         if check_time:
             timers("MLP_load_weight").start(self.sync)
@@ -461,12 +437,6 @@ class MLP:
             wo.balanced_copy(self.env.mixed, seg_lengths, 1), bo.balanced_copy(self.env.mixed, None, None),
             w_ln.balanced_copy(self.env.mixed, None, None), b_ln.balanced_copy(self.env.mixed, None, None)
         ))
-        # dst1 = self.weight_load_dst
-        # dst2 = self.compute
-        # weight_read_buf.store((
-        #     wi.smart_copy(dst1), bi.smart_copy(dst2),
-        #     wo.smart_copy(dst1), bo.smart_copy(dst2),
-        #     w_ln.smart_copy(dst2), b_ln.smart_copy(dst2)))
         if check_time:
             timers("MLP_load_weight").stop(self.sync)
 
@@ -675,16 +645,12 @@ class OptLM:
         dst = self.env.mixed
         gpu_batch_size = self.policy.gpu_batch_size
         if i == 0:  # load from the input ids
-            # val = dst.allocate((gpu_batch_size, self.task.prompt_len), np.int32)
-            # val.load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
-            val = dst.allocate_all((gpu_batch_size, self.task.prompt_len), np.int32)
+            val = dst.allocate_all((gpu_batch_size, self.task.prompt_len), np.int32, np.int32)
             val.data[0][0].load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
             val.data[0][1].load_from_np(self.output_ids[:gpu_batch_size, :self.task.prompt_len])
         else:  # load from the last generated token
             pos = self.task.prompt_len + i
-            # val = dst.allocate((gpu_batch_size, 1), np.int32)
-            # val.load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
-            val = dst.allocate_all((gpu_batch_size, 1), np.int32)
+            val = dst.allocate_all((gpu_batch_size, 1), np.int32, np.int32)
             val.data[0][0].load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
             val.data[0][1].load_from_np(self.output_ids[:gpu_batch_size, pos-1:pos])
         self.hidden.store(val)
@@ -720,7 +686,6 @@ class OptLM:
         self.weight_home = array_1d(self.num_layers, ValueHolder)
         for j in range(self.num_layers):
             self.init_weight(j)
-            # print(f'{j} th layer, weight len {len(self.weight_home[j].val)}')
 
     def delete_all_weights(self):
         for j in range(self.num_layers):
@@ -820,7 +785,6 @@ class OptLM:
                 self.sync()
             self.store_hidden(i)
             timers("generate").stop()
-
             if self.task.stop and np.all(self.stopped):
                 break
 
@@ -838,14 +802,6 @@ def get_filename(args):
     filename = f"fo-{model_size}-gbs{args.gpu_batch_size}-" \
                f"prompt{args.prompt_len}-" \
                f"gen{args.gen_len}-per_layer_weight_percent-{per_layer_weight_percent}-per_layer_computation_percent-{per_layer_computation_percent}-cache_percent-{cache_percent}"
-    if args.cpu_cache_compute:
-        filename += "cpu-cache"
-    else:
-        filename += "gpu-cache"
-    if args.compress_weight:
-        filename += "-compw"
-    if args.compress_cache:
-        filename += "-compc"
     return filename
 
 
@@ -866,7 +822,7 @@ def run_flexgen(args):
     prompt_len, gen_len, cut_gen_len = args.prompt_len, args.gen_len, args.cut_gen_len
 
     # Task and policy
-    warmup_inputs = get_test_inputs(512, num_prompts, tokenizer)
+    # warmup_inputs = get_test_inputs(512, num_prompts, tokenizer)
     inputs = get_test_inputs(prompt_len, num_prompts, tokenizer)
 
     gpu = TorchDevice("cuda:0")
@@ -882,16 +838,8 @@ def run_flexgen(args):
                     args.per_layer_computation_percent[0], args.per_layer_computation_percent[1],
                     args.per_layer_computation_percent[2], args.per_layer_computation_percent[3],
                     args.cache_percent[0], args.cache_percent[1],
-                    args.overlap, args.sep_layer, args.pin_weight,
-                    # args.cpu_cache_compute, args.attn_sparsity,
-                    # args.compress_weight,
-                    # CompressionConfig(num_bits=4, group_size=64,
-                    #                   group_dim=0, symmetric=False),
-                    # args.compress_cache,
-                    # CompressionConfig(num_bits=4, group_size=64,
-                    #                   group_dim=2, symmetric=False))
+                    args.overlap, args.sep_layer, args.pin_weight
     )
-    # assert not (args.compress_cache and args.attn_sparsity < 1.0), "Not implemented"
 
     opt_config = get_opt_config(args.model)
     cache_size = opt_config.cache_bytes(num_prompts, prompt_len + gen_len)
@@ -904,38 +852,38 @@ def run_flexgen(args):
     model = OptLM(opt_config, env, args.path, policy)
 
     try:
-        print("warmup - generate")
+        # print("warmup - generate")
         
-        output_ids = model.generate(
-            warmup_inputs, max_new_tokens=2, verbose=args.verbose, check_time=True)
-        InputEmbed_load_weight = timers("InputEmbed_load_weight").costs
-        InputEmbed_comp = timers("InputEmbed_comp").costs
-        OutputEmbed_load_weight = timers("OutputEmbed_load_weight").costs
-        OutputEmbed_comp = timers("OutputEmbed_comp").costs
-        SelfAttention_load_weight = timers("SelfAttention_load_weight").costs
-        SelfAttention_load_cache = timers("SelfAttention_load_cache").costs
-        SelfAttention_store_cache = timers("SelfAttention_store_cache").costs
-        SelfAttention_comp = timers("SelfAttention_comp").costs
-        MLP_load_weight = timers("MLP_load_weight").costs
-        MLP_comp = timers("MLP_comp").costs
-        print('InputEmbed')
-        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
-        print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
-        print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
+        # output_ids = model.generate(
+        #     warmup_inputs, max_new_tokens=2, verbose=args.verbose, check_time=True)
+        # InputEmbed_load_weight = timers("InputEmbed_load_weight").costs
+        # InputEmbed_comp = timers("InputEmbed_comp").costs
+        # OutputEmbed_load_weight = timers("OutputEmbed_load_weight").costs
+        # OutputEmbed_comp = timers("OutputEmbed_comp").costs
+        # SelfAttention_load_weight = timers("SelfAttention_load_weight").costs
+        # SelfAttention_load_cache = timers("SelfAttention_load_cache").costs
+        # SelfAttention_store_cache = timers("SelfAttention_store_cache").costs
+        # SelfAttention_comp = timers("SelfAttention_comp").costs
+        # MLP_load_weight = timers("MLP_load_weight").costs
+        # MLP_comp = timers("MLP_comp").costs
+        # print('InputEmbed')
+        # print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        # print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
+        # print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
 
-        print('SelfAttention')
-        print('MLP load weight', str(np.mean(MLP_load_weight)))
-        print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
+        # print('SelfAttention')
+        # print('MLP load weight', str(np.mean(MLP_load_weight)))
+        # print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
 
-        print('MLP')
-        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
-        print('MLP comp', str(np.mean(MLP_comp[1:])))
-        print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
-        print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
+        # print('MLP')
+        # print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        # print('MLP comp', str(np.mean(MLP_comp[1:])))
+        # print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
+        # print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
 
-        print('OutputEmbed')
-        print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
-        print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
+        # print('OutputEmbed')
+        # print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
+        # print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
 
         print("benchmark - generate")
         timers("generate").reset()
@@ -1051,7 +999,6 @@ if __name__ == "__main__":
     add_parser_arguments(parser)
     args = parser.parse_args()
     print(args)
-    # args = argparse.Namespace(model='facebook/opt-66b', path='~/opt_weights', offload_dir='~/flexgen_offload_dir', prompt_len=512, gen_len=32, cut_gen_len=None, debug_mode=None, gpu_batch_size=1, percent=[0, 100, 0, 100], sep_layer=True, pin_weight=True, cpu_cache_compute=False, attn_sparsity=1.0, compress_weight=False, compress_cache=False, log_file='auto', no_log=False, verbose=2, overlap=True)
     assert len(args.per_layer_weight_percent) == 8
     assert len(args.per_layer_computation_percent) == 4
     assert len(args.cache_percent) == 2
