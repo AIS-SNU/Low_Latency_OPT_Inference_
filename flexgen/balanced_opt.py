@@ -937,7 +937,7 @@ def run_flexgen(args):
 
 
 def add_parser_arguments(parser):
-    parser.add_argument("--model", type=str, default="facebook/opt-1.3b",
+    parser.add_argument("--model", type=str, default="facebook/opt-6.7b",
         help="The model name.")
     parser.add_argument("--path", type=str, default="~/opt_weights",
         help="The path to the model weights. If there are no cached weights, "
@@ -952,12 +952,12 @@ def add_parser_arguments(parser):
         choices=["fewer_batch", "breakdown"])
     parser.add_argument("--gpu-batch-size", type=int, default=1)
     parser.add_argument("--cache-percent", nargs="+", type=int,
-        default=[80, 20],
+        default=[50, 50],
         help="two numbers. They are "
          "the percentage of attention cache on GPU, "
          "the percentage of attention cache on CPU, ")
     parser.add_argument("--per-layer-weight-percent", nargs="+", type=int,
-        default=[20, 80, 20, 80, 20, 80, 20, 80],
+        default=[50, 50, 50, 50, 50, 50, 50, 50],
         help="Eight numbers. They are "
          "the percentage of InputEmbed weight on GPU, "
          "the percentage of InputEmbed weight on CPU, "
@@ -968,7 +968,7 @@ def add_parser_arguments(parser):
          "the percentage of MLP weight on GPU, "
          "the percentage of MLP weight on CPU, ")
     parser.add_argument("--per-layer-computation-percent", nargs="+", type=int,
-        default=[80, 20, 80, 20],
+        default=[50, 50, 50, 50],
         help="Four numbers. They are "
          "the percentage of InputEmbed computation on GPU, "
          "the percentage of OutputEmbed computation on GPU, "

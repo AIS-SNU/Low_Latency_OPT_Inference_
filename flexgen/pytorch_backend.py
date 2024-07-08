@@ -142,7 +142,9 @@ class TorchTensor:
     def balanced_copy(self, dst, dst_seg_lengths, seg_dim, cpu_dtype=None):
         cpu_dtype = cpu_dtype if cpu_dtype else np.float32
         if isinstance(self.data, tuple):
-            if self.data[1] == dst_seg_lengths:
+            if dst_seg_lengths == None:
+                return self, False
+            else:
                 return self, False
         if seg_dim == None:
             ret = dst.allocate_all(self.shape, torch_dtype_to_np_dtype[self.dtype], cpu_dtype)
