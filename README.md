@@ -36,6 +36,19 @@ mpirun -n 4 python -m flexgen.dist_low_latency_opt --head-ip 127.0.1.1 --port 77
 #### Multi GPU performance
 The graph below shows the throughput and latency measurements of our model and FlexGen, with varying initial arguments (e.g., init weight percent, init cache percent, batch size, num_batch). Compared to FlexGen, our model demonstrates better throughput and lower latency.
 
+Table below is the latency of LL_OPT on various size of models. 
+
+              | OPT-1.3B         | OPT-6.7B         | OPT-30B
+              |Latency(s)|Speedup|Latency(s)|Speedup|Latency(s)|Speedup
+---           | :---:    | :---: | :---:    | :---: | :---:    | :---:
+LL_OPT(1 GPU) | 0.70     | 1.00  | 28.23    | 1.00  | 317.27   | 1.00
+LL_OPT(2 GPU) | 0.74     | 0.95  | 14.27    | 1.98  | 158.71   | 2.00
+LL_OPT(2 GPU)*| 0.74     | 0.95  | 1.07     | 26.28 | 107.45   | 2.95
+LL_OPT(4 GPU) | 0.78     | 0.90  | 7.27     | 3.88  | 79.74    | 3.98
+LL_OPT(4 GPU)*| 0.78     | 0.90  | 1.09     | 25.86 | 27.04    | 11.73
+
+
+
 <img src="https://github.com/fmlini251/FlexGen/blob/main/docs/performance.png" alt="image" width="500"></img>
 
 ### Balanced OPT
