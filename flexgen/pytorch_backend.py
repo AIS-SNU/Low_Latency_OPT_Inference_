@@ -141,19 +141,22 @@ class TorchTensor:
         return ret
     def balanced_copy(self, dst, dst_seg_lengths, seg_dim, cpu_dtype=None):
         cpu_dtype = cpu_dtype if cpu_dtype else np.float32
-        if isinstance(self.data, tuple):
-            if dst_seg_lengths == None:
+        if seg_dim == None: ## no dst segment
+            ## if src is already distributed
+            if isinstance(self.data, tuple) and self.data[1] == None:
                 return self, False
             else:
-                return self, False
-        if seg_dim == None:
-            ret = dst.allocate_all(self.shape, torch_dtype_to_np_dtype[self.dtype], cpu_dtype)
-            general_copy(ret, None, self, None, seg_dim)
-            return ret, True
+                ret = dst.allocate_all(self.shape, torch_dtype_to_np_dtype[self.dtype], cpu_dtype)
+                general_copy(ret, None, self, None, seg_dim)
+                return ret, True
         else:
-            ret = dst.allocate(self.shape, torch_dtype_to_np_dtype[self.dtype], dst_seg_lengths, seg_dim=seg_dim)
-            general_copy(ret, None, self, None, seg_dim)
-            return ret, True
+            src_seg_lengths = [self.data[1][1] - self.data[1][0], self.data[1][2] - self.data[1][1], self.data[1][3] - self.data[1][2]]
+            if dst_seg_lengths == src_seg_lengths:
+                return self, False
+            else:
+                ret = dst.allocate(self.shape, torch_dtype_to_np_dtype[self.dtype], dst_seg_lengths, seg_dim=seg_dim)
+                general_copy(ret, None, self, None, seg_dim)
+                return ret, True
     def smart_copy(self, dst, src_indices=None):
         if self.device == dst:
             return self, False
@@ -1399,6 +1402,8 @@ class TorchMixedDevice:
         k_new_gpu = k_gpu.permute(1, 0, 2, 3).reshape(tgt_s, -1, head_dim)
         # shape: (1, b * n_head // world_size, head_dim)
         v_new_gpu = v_gpu.permute(1, 0, 2, 3).reshape(tgt_s, -1, head_dim)
+
+        # shape: (s, b * n_head // world_size, head_dim)
         k_gpu = k_cache.data[0][0].data[:src_s]
         v_gpu = v_cache.data[0][0].data[:src_s]
         k_gpu[src_s - 1:src_s] = k_new_gpu
