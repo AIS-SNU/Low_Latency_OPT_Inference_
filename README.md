@@ -59,6 +59,16 @@ Furthermore, to handle more computations on the GPU than indicated by the initia
 # example command
 python3 -m flexgen.balanced_opt --model facebook/opt-30b --cache-percent 40 60 --per-layer-weight-percent 0 100 0 100 0 100 0 100 --per-layer-computation-percent 40 40 40 40 --gpu-batch-size 1
 ```
-The results would be updated soon.
 
 <img src="https://github.com/fmlini251/FlexGen/blob/main/docs/Balanced_computation.png" alt="image" width="500"></img>
+
+#### Balanced OPT Performance(when weight initialization percent and computation percent are equal)
+When using the below command, we were able to achieve a latency of 12.53 seconds. This result is approximately 2.25 times faster than the latency of the original low_latency_opt, which used the same number of GPUs and the same ratio of weight initialization.
+```
+python3 -m flexgen.balanced_opt --model facebook/opt-6.7b --cache-percent 70 30 --per-layer-weight-percent 70 30 70 30 70 30 70 30 --per-layer-computation-percent 70 70 70 70 --gpu-batch-size 1
+```
+
+#### Balanced OPT Performance(when weight initialization percent and computation percent are different)
+We observed that we did not achieve the desired performance when weight initialization percent and computation percent differed. The reason for this was identified as the different computation percent, which resulted in longer times for allocating new VRAM and DRAM spaces to GPU and CPU during the load_weight and load_cache stages. This slower allocation process led to performance slower than expected.
+
+Therefore, it appears that if we perform the allocation of these spaces during the initialization stage instead, we may achieve the desired performance.

@@ -347,8 +347,6 @@ class SelfAttention:
             pos = self.task.prompt_len + i
             indices = (slice(pos - k_new.shape[0], pos),
                        slice(0, k_new.shape[1]))
-        if k_new.data[1] == None:
-            print("!!!!!")
         general_copy(k_home, indices, k_new, None, seg_dim=1)
         general_copy(v_home, indices, v_new, None, seg_dim=1)
         if check_time:
@@ -815,7 +813,7 @@ def get_test_inputs(prompt_len, num_prompts, tokenizer):
 def run_flexgen(args):
     print(f"<run_flexgen>: args.model: {args.model}")
     if args.model == "facebook/galactica-30b":
-        tokenizer = AutoTokenizer.from_pretrained("facebook/galactica-30b", padding_side="left")
+        tokenizer = AutoTokenizer.from_pretrained("facebook/galactica-6.7b", padding_side="left")
     else:
         tokenizer = AutoTokenizer.from_pretrained("facebook/opt-30b", padding_side="left")
     num_prompts = args.gpu_batch_size

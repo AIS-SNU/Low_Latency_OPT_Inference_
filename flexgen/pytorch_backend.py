@@ -1045,7 +1045,7 @@ class TorchMixedDevice:
                         pin_memory=pin_memory))
                 else:
                     tensors.append(devices[i].allocate(seg_shape, np.float32,
-                        pin_memory=pin_memory))
+                        pin_memory=True))
 
         return TorchTensor(shape, np_dtype_to_torch_dtype[dtype],
                         (tensors, seg_points), self, name=name)

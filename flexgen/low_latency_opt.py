@@ -1062,14 +1062,14 @@ def add_parser_arguments(parser):
         help="Cut generation length for fast debugging.")
     parser.add_argument("--debug-mode", type=str,
         choices=["fewer_batch", "breakdown"])
-    parser.add_argument("--gpu-batch-size", type=int, default=1)
+    parser.add_argument("--gpu-batch-size", type=int, default=10)
     parser.add_argument("--cache-percent", nargs="+", type=int,
-        default=[50, 50],
+        default=[30, 30],
         help="two numbers. They are "
          "the percentage of attention cache on GPU, "
          "the percentage of attention cache on CPU, ")
     parser.add_argument("--per-layer-percent", nargs="+", type=int,
-        default=[50, 50, 50, 50, 50, 50, 50, 50],
+        default=[0, 100, 0, 100, 0, 100, 0, 100],
         help="Six numbers. They are "
          "the percentage of InputEmbed weight on GPU, "
          "the percentage of InputEmbed weight on CPU, "
@@ -1103,7 +1103,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     add_parser_arguments(parser)
     args = parser.parse_args()
-    
     print(args)
     assert len(args.per_layer_percent) == 8
     assert len(args.cache_percent) == 2
