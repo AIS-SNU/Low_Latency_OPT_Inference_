@@ -47,7 +47,7 @@ Table below is the latency and speedup of LL_OPT on various size of models. For 
 | LL_OPT(4 GPU) | 0.78     | 0.90  | 7.27     | 3.88  | 79.74    | 3.98  |
 | LL_OPT(4 GPU)*| 0.78     | 0.90  | 1.09     | 25.86 | 27.04    | 11.73 |
 
-
+Configs for benchmark is [Config](https://github.com/fmlini251/FlexGen/blob/main/docs/benchmark_configs.txt)
 
 <img src="https://github.com/fmlini251/FlexGen/blob/main/docs/performance.png" alt="image" width="500"></img>
 
@@ -72,3 +72,5 @@ python3 -m flexgen.balanced_opt --model facebook/opt-6.7b --cache-percent 70 30 
 We observed that we did not achieve the desired performance when weight initialization percent and computation percent differed. The reason for this was identified as the different computation percent, which resulted in longer times for allocating new VRAM and DRAM spaces to GPU and CPU during the load_weight and load_cache stages. This slower allocation process led to performance slower than expected.
 
 Therefore, it appears that if we perform the allocation of these spaces during the initialization stage instead, we may achieve the desired performance.
+
+Config for benchmark is [Config](https://github.com/fmlini251/FlexGen/blob/main/docs/balanced_opt_benchmark_config.txt)

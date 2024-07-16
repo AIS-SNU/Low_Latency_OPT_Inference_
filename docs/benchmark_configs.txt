@@ -1,0 +1,48 @@
+benchmark
+
+OPT-1.3B
+all
+cache 100 0
+weight 100 0 100 0 100 0 100 0
+
+OPT-6.7B
+gpu 1
+cache  100 0
+weight 70 30 70 30 70 30 70 30
+
+gpu 2
+cache 100 0
+weight 70 30 70 30 70 30 70 30
+
+gpu 2*
+cache 100 0
+weight 100 0 100 0 100 0 100 0
+
+gpu 4
+cache 100 0
+weight 70 30 70 30 70 30 70 30
+
+gpu 4*
+cache 100 0
+weight 100 0 100 0 100 0 100 0
+
+OPT-30B
+gpu 1
+cache 100 0
+weight 0 100 0 100 0 100 0 100
+
+gpu 2
+cache 100 0
+weight 0 100 0 100 0 100 0 100
+
+gpu 2*
+cache 100 0
+weight 0 100 0 100 0 100 50 50
+
+gpu 4
+cache 100 0
+weight 0 100 0 100 0 100 0 100
+
+gpu 4*
+cache 100 0
+weight 100 0 100 0 100 0 70 30
