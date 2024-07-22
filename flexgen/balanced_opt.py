@@ -771,21 +771,24 @@ class OptLM:
         self.load_weight(0, 0, True)
         self.sync()
         # Generate
-        for i in range(self.execute_gen_len):
-            timers("generate").start()
-            self.update_attention_mask(i)
-            self.load_hidden(i)
-            for j in range(self.num_layers):
-                self.load_weight(i, j+1, self.task.check_time)
-                self.load_cache(i, j+1, self.task.check_time)
-                self.compute_layer(i, j, self.task.check_time)
-                self.store_cache(i, j-1, self.task.check_time)
-                self.sync()
-            self.store_hidden(i)
-            timers("generate").stop()
-            if self.task.stop and np.all(self.stopped):
-                break
-
+        lst = []
+        with open('rslt_7030.txt', 'w') as f:
+            for i in range(self.execute_gen_len):
+                timers("generate").start()
+                self.update_attention_mask(i)
+                self.load_hidden(i)
+                for j in range(self.num_layers):
+                    start = time.time()
+                    self.load_weight(i, j+1, self.task.check_time)
+                    self.load_cache(i, j+1, self.task.check_time)
+                    self.compute_layer(i, j, self.task.check_time)
+                    self.store_cache(i, j-1, self.task.check_time)
+                    self.sync()
+                    f.write(f'{i}, {self.layers[j].__class__.__name__}, {time.time() - start}\n')
+                self.store_hidden(i)
+                timers("generate").stop()
+                if self.task.stop and np.all(self.stopped):
+                    break
 def get_filename(args):
     model_size = args.model.split('-')[-1]
     per_layer_weight_percent = ""
@@ -864,22 +867,72 @@ def run_flexgen(args):
         SelfAttention_comp = timers("SelfAttention_comp").costs
         MLP_load_weight = timers("MLP_load_weight").costs
         MLP_comp = timers("MLP_comp").costs
-        print('InputEmbed')
+        # with open('InputEmbed_load_weight.txt', 'w') as f:
+        #     for i in InputEmbed_load_weight:
+        #         f.write(f'{i}\n')
+        #     f.close()
+        # with open('InputEmbed_comp.txt', 'w') as f:
+        #     for i in InputEmbed_comp:
+        #         f.write(f'{i}\n')
+        #     f.close()
+        # with open('OutputEmbed_load_weight.txt', 'w') as f:
+        #     for i in OutputEmbed_load_weight:
+        #         f.write(f'{i}\n')
+        # with open('OutputEmbed_comp.txt', 'w') as f:
+        #     for i in OutputEmbed_comp:
+        #         f.write(f'{i}\n')
+        # with open('SelfAttention_load_weight.txt', 'w') as f:
+        #     for i in SelfAttention_load_weight:
+        #         f.write(f'{i}\n')
+        #     f.close()
+        # with open('SelfAttention_comp.txt', 'w') as f:
+        #     for i in SelfAttention_comp:
+        #         f.write(f'{i}\n')
+        # with open('MLP_load_weight.txt', 'w') as f:
+        #     for i in MLP_load_weight:
+        #         f.write(f'{i}\n')
+        # with open('MLP_comp.txt', 'w') as f:
+        #     for i in MLP_comp:
+        #         f.write(f'{i}\n')
+        # with open('SelfAttention_load_cache.txt', 'w') as f:
+        #     for i in SelfAttention_load_cache:
+        #         f.write(f'{i}\n')
+        # with open('SelfAttention_store_caceh.txt', 'w') as f:
+        #     for i in SelfAttention_store_cache:
+        #         f.write(f'{i}\n')
+        num_layers = opt_config.num_hidden_layers
+        print('InputEmbed prifill')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('inputembed comp', str(np.mean(InputEmbed_comp[:1])))
+
+        print('InputEmbed decode')
         print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
         print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
         print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
 
-        print('SelfAttention')
+        print('SelfAttention prifill')
         print('MLP load weight', str(np.mean(MLP_load_weight)))
-        print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
+        print('selfattention comp', str(np.mean(SelfAttention_comp[:num_layers])))
 
-        print('MLP')
+        print('SelfAttention decode')
+        print('MLP load weight', str(np.mean(MLP_load_weight)))
+        print('selfattention comp', str(np.mean(SelfAttention_comp[num_layers:])))
+
+        print('MLP prifill')
         print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
-        print('MLP comp', str(np.mean(MLP_comp[1:])))
+        print('MLP comp', str(np.mean(MLP_comp[:num_layers])))
+
+        print('MLP decode')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('MLP comp', str(np.mean(MLP_comp[num_layers:])))
         print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
         print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
 
-        print('OutputEmbed')
+        print('OutputEmbed prifill')
+        print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
+        print('outputembed comp', str(np.mean(OutputEmbed_comp[:1])))
+
+        print('OutputEmbed decode')
         print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
         print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
 
@@ -935,7 +988,7 @@ def run_flexgen(args):
 
 
 def add_parser_arguments(parser):
-    parser.add_argument("--model", type=str, default="facebook/opt-6.7b",
+    parser.add_argument("--model", type=str, default="facebook/opt-30b",
         help="The model name.")
     parser.add_argument("--path", type=str, default="~/opt_weights",
         help="The path to the model weights. If there are no cached weights, "
@@ -950,12 +1003,12 @@ def add_parser_arguments(parser):
         choices=["fewer_batch", "breakdown"])
     parser.add_argument("--gpu-batch-size", type=int, default=1)
     parser.add_argument("--cache-percent", nargs="+", type=int,
-        default=[70, 30],
+        default=[30, 70],
         help="two numbers. They are "
          "the percentage of attention cache on GPU, "
          "the percentage of attention cache on CPU, ")
     parser.add_argument("--per-layer-weight-percent", nargs="+", type=int,
-        default=[70, 30, 70, 30, 70, 30, 70, 30],
+        default=[0, 100, 0, 100, 0, 100, 0, 100],
         help="Eight numbers. They are "
          "the percentage of InputEmbed weight on GPU, "
          "the percentage of InputEmbed weight on CPU, "
@@ -966,7 +1019,7 @@ def add_parser_arguments(parser):
          "the percentage of MLP weight on GPU, "
          "the percentage of MLP weight on CPU, ")
     parser.add_argument("--per-layer-computation-percent", nargs="+", type=int,
-        default=[70, 70, 70, 70],
+        default=[30, 30, 30, 30],
         help="Four numbers. They are "
          "the percentage of InputEmbed computation on GPU, "
          "the percentage of OutputEmbed computation on GPU, "

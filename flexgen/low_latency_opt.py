@@ -978,22 +978,41 @@ def run_flexgen(args):
         SelfAttention_comp = timers("SelfAttention_comp").costs
         MLP_load_weight = timers("MLP_load_weight").costs
         MLP_comp = timers("MLP_comp").costs
-        print('InputEmbed')
+
+        num_layers = opt_config.num_hidden_layers
+
+        print('InputEmbed prifill')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('inputembed comp', str(np.mean(InputEmbed_comp[:1])))
+
+        print('InputEmbed decode')
         print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
         print('inputembed comp', str(np.mean(InputEmbed_comp[1:])))
         print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
 
-        print('SelfAttention')
+        print('SelfAttention prifill')
         print('MLP load weight', str(np.mean(MLP_load_weight)))
-        print('selfattention comp', str(np.mean(SelfAttention_comp[1:])))
+        print('selfattention comp', str(np.mean(SelfAttention_comp[:num_layers])))
 
-        print('MLP')
+        print('SelfAttention decode')
+        print('MLP load weight', str(np.mean(MLP_load_weight)))
+        print('selfattention comp', str(np.mean(SelfAttention_comp[num_layers:])))
+
+        print('MLP prifill')
         print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
-        print('MLP comp', str(np.mean(MLP_comp[1:])))
+        print('MLP comp', str(np.mean(MLP_comp[:num_layers])))
+
+        print('MLP decode')
+        print('selfattention load_weight', str(np.mean(SelfAttention_load_weight)))
+        print('MLP comp', str(np.mean(MLP_comp[num_layers:])))
         print('selfattention load cache', str(np.mean(SelfAttention_load_cache)))
         print('selfattention store cache', str(np.mean(SelfAttention_store_cache)))
 
-        print('OutputEmbed')
+        print('OutputEmbed prifill')
+        print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
+        print('outputembed comp', str(np.mean(OutputEmbed_comp[:1])))
+
+        print('OutputEmbed decode')
         print('inputembed load weight', str(np.mean(InputEmbed_load_weight)))
         print('outputembed comp', str(np.mean(OutputEmbed_comp[1:])))
 
@@ -1049,7 +1068,7 @@ def run_flexgen(args):
 
 
 def add_parser_arguments(parser):
-    parser.add_argument("--model", type=str, default="facebook/opt-6.7b",
+    parser.add_argument("--model", type=str, default="facebook/opt-30b",
         help="The model name.")
     parser.add_argument("--path", type=str, default="~/opt_weights",
         help="The path to the model weights. If there are no cached weights, "
@@ -1062,9 +1081,9 @@ def add_parser_arguments(parser):
         help="Cut generation length for fast debugging.")
     parser.add_argument("--debug-mode", type=str,
         choices=["fewer_batch", "breakdown"])
-    parser.add_argument("--gpu-batch-size", type=int, default=10)
+    parser.add_argument("--gpu-batch-size", type=int, default=1)
     parser.add_argument("--cache-percent", nargs="+", type=int,
-        default=[30, 30],
+        default=[100, 0],
         help="two numbers. They are "
          "the percentage of attention cache on GPU, "
          "the percentage of attention cache on CPU, ")
