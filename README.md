@@ -70,8 +70,6 @@ python3 -m flexgen.balanced_opt --model facebook/opt-6.7b --cache-percent 70 30 
 ```
 
 #### Balanced OPT Performance(when weight initialization percent and computation percent are different)
-We observed that we did not achieve the desired performance when weight initialization percent and computation percent differed. The reason for this was identified as the different computation percent, which resulted in longer times for allocating new VRAM and DRAM spaces to GPU and CPU during the load_weight and load_cache stages. This slower allocation process led to performance slower than expected.
-
-Therefore, it appears that if we perform the allocation of these spaces during the initialization stage instead, we may achieve the desired performance.
+We observed that we did not achieve the desired performance when weight initialization percent and computation percent differed. The reason as 
 
 Config for benchmark is [Config](https://github.com/fmlini251/FlexGen/blob/main/docs/balanced_opt_benchmark_config.txt)

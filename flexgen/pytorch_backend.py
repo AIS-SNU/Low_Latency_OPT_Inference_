@@ -1105,27 +1105,6 @@ class TorchMixedDevice:
         gpu_tensor += cpu_tensor_to_gpu
         cpu_tensor += gpu_tensor_to_cpu
         return TorchTensor(gpu_tensor.shape, dtype=cpu_tensor.dtype, data=[[gpu_tensor, cpu_tensor, None], None], device=self, seg_dim=None)
-    # def init_balanced_compute_workspace(self, config, task, policy):
-    #     b = policy.gpu_batch_size
-    #     n_head = config.n_head
-    #     head_dim = config.input_dim // n_head
-    #     max_seq_len = task.prompt_len + task.gen_len - 1
-    #     self.kv_cache_workspace = []
-    #     self.input_embed_weight_workspace = []
-    #     self.attention_weight_workspace = []
-    #     self.mlp_weight_workspace = []
-    #     self.output_embed_weight_workspace = []
-    #     self.workspace_pt = 0
-
-    #     self.input_embed_weight_workspace
-    #     # We currently separate SelfAttention and MLP as two layers,
-    #     # so we only need one workspace instead of two.
-    #     for i in range(1 if policy.sep_layer else 2):
-    #         shape = (max_seq_len, b * n_head, head_dim)
-    #         # k_cache = self.allocate(shape, np.float32, pin_memory=False)
-    #         # v_cache = self.allocate(shape, np.float32, pin_memory=False)
-    #         # self.kv_cache_workspace.append((k_cache, v_cache))
-
     def init_weight_balanced(self, weight_specs, dev_percents, n_head=None):
         weights = []
         

@@ -886,7 +886,6 @@ class OptLM:
                 self.sync()
             self.store_hidden(i)
             timers("generate").stop()
-
             if self.task.stop and np.all(self.stopped):
                 break
 
@@ -1122,6 +1121,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     add_parser_arguments(parser)
     args = parser.parse_args()
+    args.cpu_cache_compute = True ########
     print(args)
     assert len(args.per_layer_percent) == 8
     assert len(args.cache_percent) == 2

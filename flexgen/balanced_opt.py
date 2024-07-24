@@ -772,23 +772,20 @@ class OptLM:
         self.sync()
         # Generate
         lst = []
-        with open('rslt_7030.txt', 'w') as f:
-            for i in range(self.execute_gen_len):
-                timers("generate").start()
-                self.update_attention_mask(i)
-                self.load_hidden(i)
-                for j in range(self.num_layers):
-                    start = time.time()
-                    self.load_weight(i, j+1, self.task.check_time)
-                    self.load_cache(i, j+1, self.task.check_time)
-                    self.compute_layer(i, j, self.task.check_time)
-                    self.store_cache(i, j-1, self.task.check_time)
-                    self.sync()
-                    f.write(f'{i}, {self.layers[j].__class__.__name__}, {time.time() - start}\n')
-                self.store_hidden(i)
-                timers("generate").stop()
-                if self.task.stop and np.all(self.stopped):
-                    break
+        for i in range(self.execute_gen_len):
+            timers("generate").start()
+            self.update_attention_mask(i)
+            self.load_hidden(i)
+            for j in range(self.num_layers):
+                self.load_weight(i, j+1, self.task.check_time)
+                self.load_cache(i, j+1, self.task.check_time)
+                self.compute_layer(i, j, self.task.check_time)
+                self.store_cache(i, j-1, self.task.check_time)
+                self.sync()
+            self.store_hidden(i)
+            timers("generate").stop()
+            if self.task.stop and np.all(self.stopped):
+                break
 def get_filename(args):
     model_size = args.model.split('-')[-1]
     per_layer_weight_percent = ""
@@ -1003,7 +1000,7 @@ def add_parser_arguments(parser):
         choices=["fewer_batch", "breakdown"])
     parser.add_argument("--gpu-batch-size", type=int, default=1)
     parser.add_argument("--cache-percent", nargs="+", type=int,
-        default=[30, 70],
+        default=[50, 50],
         help="two numbers. They are "
          "the percentage of attention cache on GPU, "
          "the percentage of attention cache on CPU, ")
@@ -1019,7 +1016,7 @@ def add_parser_arguments(parser):
          "the percentage of MLP weight on GPU, "
          "the percentage of MLP weight on CPU, ")
     parser.add_argument("--per-layer-computation-percent", nargs="+", type=int,
-        default=[30, 30, 30, 30],
+        default=[50, 50, 50, 50],
         help="Four numbers. They are "
          "the percentage of InputEmbed computation on GPU, "
          "the percentage of OutputEmbed computation on GPU, "
